@@ -2,8 +2,16 @@
 Streamlit application for the RAG AI agent.
 """
 
-import os
+# Aufruf: streamlit run ui/app.py
+
+# Add parent directory to path to allow relative imports
 import sys
+import os
+
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from agent.agent import format_source_reference
+
 import asyncio
 from typing import List, Dict, Any
 import streamlit as st
@@ -11,12 +19,17 @@ from pathlib import Path
 import tempfile
 from datetime import datetime
 
-from supabase_py import create_client
+from dotenv import load_dotenv
+
+load_dotenv()
+from supabase import create_client, Client
 
 # Initialisierung (am Anfang der Datei)
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+from collections import OrderedDict
 
 # Add parent directory to path to allow relative imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -25,7 +38,7 @@ from document_processing.ingestion import DocumentIngestionPipeline
 from document_processing.chunker import TextChunker
 from document_processing.embeddings import EmbeddingGenerator
 from database.setup import SupabaseClient
-from agent.agent import RAGAgent, agent as rag_agent
+from agent.agent import RAGAgent, agent as rag_agent, format_source_reference
 from pydantic_ai.messages import (
     ModelRequest,
     ModelResponse,
@@ -36,7 +49,7 @@ from pydantic_ai.messages import (
 
 # Set page configuration
 st.set_page_config(
-    page_title="RAG AI Agent",
+    page_title="Wunsch Öl Wissens-Agent",
     page_icon="🔍",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -57,7 +70,7 @@ if "document_count" not in st.session_state:
     try:
         st.session_state.document_count = supabase_client.count_documents()
     except Exception as e:
-        print(f"Error getting document count: {e}")
+        print(f"Fehler beim Abrufen der Dokumentenzahl: {e}")
         st.session_state.document_count = 0
 
 if "processed_files" not in st.session_state:
@@ -80,7 +93,19 @@ def display_message_part(part):
         with st.chat_message("assistant"):
             st.markdown(part.content)
 
-result = await process_document(temp_file_path, metadata)
+
+async def process_document(file_path: str, original_filename: str) -> Dict[str, Any]:
+    """
+    Process a document file and store it in the knowledge base.
+
+    Args:
+        file_path: Path to the document file
+
+    Returns:
+        Dictionary containing information about the processed document
+    """
+    # Create document ingestion pipeline with default settings
+    # The pipeline now handles chunking and embedding internally
     pipeline = DocumentIngestionPipeline()
 
     try:
@@ -99,14 +124,14 @@ result = await process_document(temp_file_path, metadata)
             return {
                 "success": False,
                 "file_path": file_path,
-                "error": "No valid chunks were generated from the document",
+                "error": "Es wurden keine gültigen Textabschnitte aus dem Dokument erzeugt",
             }
 
         return {"success": True, "file_path": file_path, "chunk_count": len(chunks)}
     except Exception as e:
         import traceback
 
-        print(f"Error processing document: {str(e)}")
+        print(f"Fehler bei der Bearbeitung des Dokuments: {str(e)}")
         print(traceback.format_exc())
         return {"success": False, "file_path": file_path, "error": str(e)}
 
@@ -152,192 +177,219 @@ async def update_available_sources():
     """
     Update the list of available sources in the knowledge base and refresh document count.
     """
-    # Update sources list
-    sources = await rag_agent.get_available_sources()
-    st.session_state.sources = sources
-
-    # Refresh document count from database
     try:
-        st.session_state.document_count = supabase_client.count_documents()
+        response = supabase.table("rag_pages").select("metadata").execute()
+
+        file_set = set()
+        for row in response.data:
+            metadata = row.get("metadata", {})
+            filename = metadata.get("original_filename")
+            if filename:
+                file_set.add(filename)
+
+        st.session_state.sources = sorted(file_set)
+        st.session_state.document_count = len(file_set)
+
     except Exception as e:
-        print(f"Error updating document count: {e}")
+        print(f"Fehler beim Aktualisieren der Dokumentenliste: {e}")
+        for key in ["sources", "document_count", "processed_files", "messages"]:
+            if key in st.session_state:
+                del st.session_state[key]
 
 
 async def main():
-    """
-    Main function for the Streamlit application.
-    """
-    # Display header
-    st.title("🔍 RAG AI Agent")
+    # Testweise alles löschen
+    await update_available_sources()
+
+    # 💡 Nach dem Wipe Session State neu initialisieren
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
+
+    if "sources" not in st.session_state:
+        st.session_state.sources = []
+
+    if "document_count" not in st.session_state:
+        st.session_state.document_count = 0
+
+    if "processed_files" not in st.session_state:
+        st.session_state.processed_files = set()
+
+    # Liste nochmal laden (optional)
+    await update_available_sources()
+
+    st.sidebar.write("Debug-Quellen:", st.session_state.sources)
+
+    st.title("🔍 Wunsch Öl Wissens-Agent")
     st.markdown(
-        """
-        This application allows you to upload documents (TXT and PDF) to a knowledge base 
-        and ask questions that will be answered using the information in those documents.
-        """
+        """Diese Anwendung ermöglicht es, PDF- oder TXT-Datenblätter hochzuladen und anschließend Fragen dazu zu stellen. 
+        Die Antworten stammen ausschließlich aus den hochgeladenen Dokumenten."""
     )
 
-    # Sidebar for document upload
+    # Sidebar
     with st.sidebar:
-        st.header("📄 Document Upload")
+        st.header("📄 Dokumente hochladen (txt oder pdf)")
 
-        # File uploader
         uploaded_files = st.file_uploader(
-            "Upload documents to the knowledge base",
+            "Hochladen von Dokumenten in die Wissensdatenbank",
             type=["txt", "pdf"],
             accept_multiple_files=True,
         )
 
-        # Process only new uploaded files
+        # Display document count
+        st.metric("Dokumente in der Wissensdatenbank", st.session_state.document_count)
+
+        # Delete documents section
+        st.header("🗑️ Datei löschen")
+
+        if st.session_state.sources:
+            delete_filename = st.selectbox(
+                "Ausgewählte Datei löschen", st.session_state.sources
+            )
+
+            if st.button("Datei zum Löschen auswählen"):
+                storage_deleted = False
+                db_deleted = False
+
+                # 1. Datei im Supabase Storage löschen
+                try:
+                    supabase.storage.from_("privatedocs").remove([delete_filename])
+                    storage_deleted = True
+                except Exception as e:
+                    st.error(f"Löschen von Dateien fehlgeschlagen: {e}")
+
+                # 2. Alle zugehörigen Chunks aus der Datenbank löschen
+                try:
+                    st.write("DEBUG DELETE: Trying to delete", delete_filename)
+                    supabase.table("rag_pages").delete().filter(
+                        "metadata->>original_filename", "eq", delete_filename
+                    ).execute()
+                    db_deleted = True
+
+                except Exception as e:
+                    st.error(f"Datenbank-Löschung fehlgeschlagen: {e}")
+
+                # 3. Erfolgs-/Fehlermeldung anzeigen
+                if storage_deleted and db_deleted:
+                    st.success(
+                        f"Erfolgreich gelöscht {delete_filename} aus Speicher und Datenbank."
+                    )
+                elif storage_deleted:
+                    st.warning(
+                        f"Gelöscht aus dem Speicher, aber nicht aus der Datenbank: {delete_filename}"
+                    )
+                elif db_deleted:
+                    st.warning(
+                        f"Aus der Datenbank gelöscht, aber nicht aus dem Speicher: {delete_filename}"
+                    )
+
+                # 4. Dokumentliste aktualisieren
+                await update_available_sources()
+        else:
+            st.info("Keine Dateien zur Löschung verfügbar.")
+
+        # Handle uploads
         if uploaded_files:
-            # Get list of files that haven't been processed yet
             new_files = []
             for uploaded_file in uploaded_files:
-                # Create a unique identifier for the file based on name and content hash
                 file_id = f"{uploaded_file.name}_{hash(uploaded_file.getvalue().hex())}"
-
-                # Check if this file has already been processed
                 if file_id not in st.session_state.processed_files:
                     new_files.append((uploaded_file, file_id))
 
-            # Only show progress bar if there are new files to process
             if new_files:
                 progress_bar = st.progress(0)
                 status_text = st.empty()
-
                 total_files = len(new_files)
+
                 for i, (uploaded_file, file_id) in enumerate(new_files):
-                    # Update progress
-                    progress = i / total_files
-                    progress_bar.progress(progress)
+                    progress_bar.progress(i / total_files)
                     status_text.text(
-                        f"Processing {uploaded_file.name}... ({i+1}/{total_files})"
+                        f"Verarbeite {uploaded_file.name}... ({i+1}/{total_files})"
                     )
 
-                    # Create a temporary file
                     with tempfile.NamedTemporaryFile(
                         delete=False, suffix=Path(uploaded_file.name).suffix
                     ) as temp_file:
                         temp_file.write(uploaded_file.getvalue())
                         temp_file_path = temp_file.name
 
-                        # Datei nach Supabase hochladen
-                        bucket_name = "privatedocs"
-                        with open(temp_file_path, "rb") as f:
+                    bucket_name = "privatedocs"
+                    with open(temp_file_path, "rb") as f:
                         supabase.storage.from_(bucket_name).upload(
-                        uploaded_file.name, f, {"cacheControl": "3600", "upsert": True}
-                        )           
-
-                        # Signierte URL generieren (z. B. gültig für 1 Stunde)
-                        signed_url_resp = supabase.storage.from_(bucket_name).create_signed_url(
-                            uploaded_file.name, expires_in=3600
+                            uploaded_file.name,
+                            f,
+                            {"cacheControl": "3600", "x-upsert": "true"},
                         )
+
+                        signed_url_resp = supabase.storage.from_(
+                            bucket_name
+                        ).create_signed_url(uploaded_file.name, expires_in=3600)
                         public_url = signed_url_resp["signedURL"]
 
-# Schreibe sie in die Metadaten
-metadata = {
-    "source": "ui_upload",
-    "upload_time": str(datetime.now()),
-    "original_filename": uploaded_file.name,
-    "signed_url": public_url,
-}
+                        metadata = {
+                            "source": "ui_upload",
+                            "upload_time": str(datetime.now()),
+                            "original_filename": uploaded_file.name,
+                            "signed_url": public_url,
+                        }
 
-    
                     try:
-                        # Process the document
                         result = await process_document(
                             temp_file_path, uploaded_file.name
                         )
-
-                        # Display result
                         if result["success"]:
                             st.success(
-                                f"Processed {uploaded_file.name}: {result['chunk_count']} chunks"
+                                f"Verarbeitete {uploaded_file.name}: {result['chunk_count']} Textabschnitte"
                             )
                             st.session_state.document_count += 1
-                            # Mark this file as processed
                             st.session_state.processed_files.add(file_id)
                         else:
                             st.error(
-                                f"Error processing {uploaded_file.name}: {result['error']}"
+                                f"Fehler beim Verarbeiten {uploaded_file.name}: {result['error']}"
                             )
                     finally:
-                        # Remove temporary file
                         os.unlink(temp_file_path)
 
-                # Complete progress bar
                 progress_bar.progress(1.0)
-                status_text.text("All documents processed!")
-
-                # Update available sources
+                status_text.text("Alle Dateien bearbeitet")
                 await update_available_sources()
-            elif uploaded_files:  # If we have files but none are new
-                st.info("All files have already been processed.")
+                st.rerun()
+            else:
+                st.info("Alle Dateien wurden bereits verarbeitet")
 
-        # Display document count
-        st.metric("Documents in Knowledge Base", st.session_state.document_count)
+    # Main Chat Area
+    st.header("💬 Spreche mit der KI")
 
-    # Display available sources
-    if st.session_state.sources:
-        st.subheader("Available Sources")
-        for source in st.session_state.sources:
-            st.write(f"- {source}")
-
-        # Dokument löschen Funktion
-        st.subheader("🗑️ Delete Document")
-        delete_filename = st.selectbox("Select a document to delete:", st.session_state.sources)
-        if st.button("Delete selected document"):
-            # 1. Lösche Datei aus Supabase Storage
-            try:
-                supabase.storage.from_("privatedocs").remove([delete_filename])
-                st.success(f"Deleted from storage: {delete_filename}")
-            except Exception as e:
-                st.error(f"Storage delete failed: {e}")
-
-            # 2. Lösche zugehörige Chunks aus Datenbank
-            try:
-                supabase.table("rag_pages").delete().eq("metadata->>original_filename", delete_filename).execute()
-                st.success(f"Deleted from database: {delete_filename}")
-
-                # Aktualisiere Quellenliste
-                await update_available_sources()
-            except Exception as e:
-                st.error(f"DB delete failed: {e}")
-
-    # Main chat interface
-    st.header("💬 Chat with the AI")
-
-    # Display all messages from the conversation so far
     for msg in st.session_state.messages:
         if isinstance(msg, ModelRequest) or isinstance(msg, ModelResponse):
             for part in msg.parts:
                 display_message_part(part)
 
-    # Chat input
-    if user_input := st.chat_input("Ask a question about your documents..."):
-        # Display user message
+    if user_input := st.chat_input("Stelle eine Frage zu den Dokumenten..."):
         with st.chat_message("user"):
             st.markdown(user_input)
 
-        # Display assistant response with streaming
         with st.chat_message("assistant"):
             message_placeholder = st.empty()
             full_response = ""
 
-            # Stream the response
             generator = run_agent_with_streaming(user_input)
             async for chunk in generator:
                 full_response += chunk
                 message_placeholder.markdown(full_response + "▌")
 
-            # Ergänzung: signierte URL anzeigen, falls verfügbar
             if hasattr(rag_agent, "last_match") and rag_agent.last_match:
-                match = rag_agent.last_match[0]
-                meta = match.get("metadata", {})
-                signed_url = meta.get("signed_url")
-                if signed_url:
-                    full_response += f"\n\n🔗 [PDF öffnen]({signed_url})"
+                source_map = OrderedDict()
+                for match in rag_agent.last_match:
+                    meta = match.get("metadata", {})
+                    filename = meta.get("original_filename")
+                    if filename and filename not in source_map:
+                        source_map[filename] = meta
 
-            # Final response ohne Cursor
+                full_response += "\n\n### 📄 Verwendete Dokumente:\n"
+                for meta in source_map.values():
+                    # full_response += f"\n- {format_source_reference(meta)}"
+                    full_response += f"\n- {format_source_reference(meta)}"
+
             message_placeholder.markdown(full_response)
 
 

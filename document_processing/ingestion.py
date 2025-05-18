@@ -27,35 +27,17 @@ class DocumentIngestionPipeline:
     """
 
     def __init__(self, supabase_client: Optional[SupabaseClient] = None):
-        """
-        Initialize the document ingestion pipeline with default components.
-
-        Args:
-            supabase_client: Optional SupabaseClient for database operations
-        """
         self.chunker = TextChunker(chunk_size=1000, chunk_overlap=200)
         self.embedding_generator = EmbeddingGenerator()
-        self.max_file_size_mb = 10  # Maximum file size in MB
+        self.max_file_size_mb = 10
         self.supabase_client = supabase_client or SupabaseClient()
-
         logger.info("Initialized DocumentIngestionPipeline with default components")
 
     def _check_file(self, file_path: str) -> bool:
-        """
-        Validate file exists and is within size limits.
-
-        Args:
-            file_path: Path to the document file
-
-        Returns:
-            True if file is valid, False otherwise
-        """
-        # Check if file exists
         if not os.path.exists(file_path):
             logger.error(f"File not found: {file_path}")
             return False
 
-        # Check file size
         file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
         if file_size_mb > self.max_file_size_mb:
             logger.error(
@@ -68,21 +50,9 @@ class DocumentIngestionPipeline:
     def process_file(
         self, file_path: str, metadata: Optional[Dict[str, Any]] = None
     ) -> List[Dict[str, Any]]:
-        """
-        Process a document file, extract text, generate chunks and embeddings.
-
-        Args:
-            file_path: Path to the document file
-            metadata: Optional metadata to associate with the document
-
-        Returns:
-            List of document chunks with embeddings
-        """
-        # Validate file
         if not self._check_file(file_path):
             return []
 
-        # Get appropriate document processor
         try:
             processor = get_document_processor(file_path)
             if not processor:
@@ -92,7 +62,6 @@ class DocumentIngestionPipeline:
             logger.error(f"Error getting document processor: {str(e)}")
             return []
 
-        # Extract text from document
         try:
             text = processor.extract_text(file_path)
             logger.info(
@@ -111,12 +80,17 @@ class DocumentIngestionPipeline:
             )
             return []
 
-        # Generate chunks
         try:
             chunks = self.chunker.chunk_text(text)
-
-            # Filter out empty chunks
-            chunks = [chunk for chunk in chunks if chunk and chunk.strip()]
+            chunks = [
+                chunk
+                for chunk in chunks
+                if chunk
+                and (
+                    (isinstance(chunk, str) and chunk.strip())
+                    or (isinstance(chunk, dict) and chunk.get("text", "").strip())
+                )
+            ]
 
             if not chunks:
                 logger.warning("No valid chunks generated from document")
@@ -128,16 +102,18 @@ class DocumentIngestionPipeline:
             logger.error(f"Error chunking document: {str(e)}")
             return []
 
-        # Generate embeddings for chunks
         try:
-            embeddings = self.embedding_generator.embed_batch(chunks, batch_size=5)
+            chunk_texts = [
+                chunk["text"] if isinstance(chunk, dict) else chunk for chunk in chunks
+            ]
+            embeddings = self.embedding_generator.embed_batch(chunk_texts, batch_size=5)
 
             if len(embeddings) != len(chunks):
                 logger.warning(
                     f"Mismatch between chunks ({len(chunks)}) and embeddings ({len(embeddings)})"
                 )
-                # Ensure we only process chunks that have embeddings
                 chunks = chunks[: len(embeddings)]
+                chunk_texts = chunk_texts[: len(embeddings)]
 
             logger.info(f"Generated {len(embeddings)} embeddings")
 
@@ -145,17 +121,16 @@ class DocumentIngestionPipeline:
             logger.error(f"Error generating embeddings: {str(e)}")
             return []
 
-        # Create document records
         try:
-            # Generate a unique document ID
             document_id = str(uuid.uuid4())
             timestamp = datetime.now().isoformat()
 
-            # Prepare metadata
             if metadata is None:
                 metadata = {}
 
-            # Add file info to metadata
+            metadata = metadata or {}
+            metadata = metadata.copy()  # wichtig: nie original überschreiben
+
             metadata.update(
                 {
                     "filename": os.path.basename(file_path),
@@ -166,37 +141,40 @@ class DocumentIngestionPipeline:
                 }
             )
 
-            # Create records and store in database
             records = []
             stored_records = []
 
-            # Create a URL/identifier for the document
-            url = f"file://{os.path.basename(file_path)}"
+            for i, (chunk, chunk_text, embedding) in enumerate(
+                zip(chunks, chunk_texts, embeddings)
+            ):
+                chunk_metadata = metadata.copy()
+                if isinstance(chunk, dict):
+                    page_number = chunk.get("page")
+                    if page_number is not None:
+                        chunk_metadata["page"] = page_number
 
-            for i, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
-                # Create record for return value
                 record = {
                     "id": f"{document_id}_{i}",
                     "document_id": document_id,
                     "chunk_index": i,
-                    "text": chunk,
+                    "text": chunk_text,
                     "embedding": embedding,
-                    "metadata": metadata.copy(),
+                    "metadata": chunk_metadata,
                 }
-                records.append(record)
 
-                # Store in Supabase
                 try:
                     stored_record = self.supabase_client.store_document_chunk(
-                        url=url,
+                        url=metadata.get("original_filename"),
                         chunk_number=i,
-                        content=chunk,
+                        content=chunk_text,
                         embedding=embedding,
-                        metadata=metadata.copy(),
+                        metadata=chunk_metadata,
                     )
                     stored_records.append(stored_record)
                 except Exception as e:
                     logger.error(f"Error storing chunk {i} in database: {str(e)}")
+
+                records.append(record)
 
             logger.info(
                 f"Created {len(records)} document records with ID {document_id}"
@@ -241,7 +219,17 @@ class DocumentIngestionPipeline:
         try:
             # Generate chunks
             chunks = self.chunker.chunk_text(text)
-            chunks = [chunk for chunk in chunks if chunk and chunk.strip()]
+            logger.debug(f"Extracted text:\n{text[:1000]}")
+
+            chunks = [
+                chunk
+                for chunk in chunks
+                if chunk
+                and (
+                    (isinstance(chunk, str) and chunk.strip())
+                    or (isinstance(chunk, dict) and chunk.get("text", "").strip())
+                )
+            ]
 
             if not chunks:
                 logger.warning("No valid chunks generated from text")
