@@ -80,37 +80,51 @@ class SupabaseClient:
     def search_documents(
         self,
         query_embedding: List[float],
+        match_threshold: float = 0.5,
         match_count: int = 5,
-        filter_metadata: Dict[str, Any] = None,
+        filter_metadata: Optional[Dict[str, Any]] = None,
     ) -> List[Dict[str, Any]]:
         """
-        Search for document chunks by vector similarity.
+        Search for document chunks by vector similarity using Supabase RPC.
 
         Args:
-            query_embedding: Vector embedding of the query
-            match_count: Maximum number of results to return
-            filter_metadata: Optional metadata filter
+            query_embedding: OpenAI-compatible query embedding (1536 dims)
+            match_threshold: Minimum similarity score (0.0 – 1.0)
+            match_count: Maximum number of returned matches
 
         Returns:
             List of matching document chunks with similarity scores
         """
-        # Prepare parameters for the RPC call
-        params = {"query_embedding": query_embedding, "match_count": match_count}
 
-        # Add filter if provided
+        match_threshold = float(os.getenv("MIN_SIMILARITY_SCORE", "0.5"))
+
+        # RPC-Aufruf vorbereiten
+        params = {
+            "query_embedding": query_embedding,
+            "match_threshold": match_threshold,
+            "match_count": match_count,
+        }
+
         if filter_metadata:
             params["filter"] = filter_metadata
 
-        # Call the match_rag_pages function
-        result = self.client.rpc("match_rag_pages", params).execute()
+        try:
+            result = self.client.rpc("match_rag_pages", params).execute()
 
-        # Return only matches with high similarity (e.g., > 0.88)
-        min_score = float(
-            os.getenv("MIN_SIMILARITY_SCORE", "0.88")
-        )  # you can override via .env
-        if result.data:
-            return [r for r in result.data if r.get("similarity", 0) >= min_score]
-        else:
+            if not result.data:
+                print("⚠️ Keine Dokument-Treffer für die Anfrage gefunden.")
+                return []
+
+            print(f"\n🔍 Top {len(result.data)} RAG-Matches:")
+            for r in result.data:
+                score = r.get("similarity", 0.0)
+                preview = r["content"][:120].replace("\n", " ")
+                print(f"  • Score: {score:.3f} → {preview}...")
+
+            return result.data
+
+        except Exception as e:
+            print("❌ Fehler bei Supabase-RPC:", str(e))
             return []
 
     def get_document_by_id(self, doc_id: int) -> Dict[str, Any]:

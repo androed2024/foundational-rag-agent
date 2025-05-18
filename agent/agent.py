@@ -5,8 +5,10 @@ Main agent definition for the RAG AI agent.
 import os
 import sys
 from typing import List, Dict, Any, Optional, TypedDict
+
 from pydantic_ai import Agent
 from pydantic_ai.tools import Tool
+
 from dotenv import load_dotenv
 from pathlib import Path
 
@@ -101,9 +103,9 @@ class RAGAgent:
 
         # Get the knowledge base search results from the tool calls
         kb_results = []
-        for tool_call in result.tool_calls:
+        for tool_call in getattr(result, "tool_calls", []):
             if tool_call.tool.name == "search":
-                kb_results = tool_call.result
+                kb_results = tool_call.result or []
 
         return {"response": response, "kb_results": kb_results}
 

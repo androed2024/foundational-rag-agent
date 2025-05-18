@@ -1,5 +1,5 @@
 """
-Document processors for extracting text from various file types.
+Document processors for PdfProcessor.extract_textextracting text from various file types.
 """
 
 import os
@@ -7,6 +7,11 @@ import logging
 from typing import Dict, Any, Optional, List
 from pathlib import Path
 import PyPDF2
+
+# processors.py
+from unstructured.partition.pdf import partition_pdf
+import unicodedata
+from pathlib import Path
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -124,95 +129,35 @@ class TxtProcessor(DocumentProcessor):
 
 class PdfProcessor(DocumentProcessor):
     """
-    Processor for PDF files with improved text extraction.
+    Processor for PDF files using unstructured for better text extraction.
     """
 
     def extract_text(self, file_path: str) -> str:
-        """
-        Extract text from a PDF file with page tracking.
+        from unstructured.partition.pdf import partition_pdf
+        import unicodedata
 
-        Args:
-            file_path: Path to the PDF file
+        elements = partition_pdf(
+            filename=file_path,
+            ocr_languages="deu+eng",  # OCR wird nur genutzt, wenn nötig
+            extract_images_in_pdf=False,
+        )
 
-        Returns:
-            Extracted text content
-        """
-        path = Path(file_path)
+        raw = "\n".join(e.text for e in elements if e.text)
+        clean = (
+            unicodedata.normalize("NFKC", raw)
+            .replace("\u2011", "-")
+            .replace("\u00a0", " ")
+        )
 
-        # Validate file exists
-        if not path.exists():
-            raise FileNotFoundError(f"File not found: {file_path}")
-
-        try:
-            with open(file_path, "rb") as file:
-                reader = PyPDF2.PdfReader(file)
-
-                # Extract text from all pages with page numbers
-                content = []
-                total_pages = len(reader.pages)
-
-                for page_num in range(total_pages):
-                    try:
-                        page = reader.pages[page_num]
-                        page_text = page.extract_text()
-
-                        # Add page marker and text
-                        if page_text and page_text.strip():
-                            content.append(
-                                f"[Page {page_num + 1} of {total_pages}]\n{page_text}\n"
-                            )
-                    except Exception as e:
-                        logger.warning(
-                            f"Error extracting text from page {page_num + 1}: {str(e)}"
-                        )
-                        content.append(
-                            f"[Page {page_num + 1} of {total_pages} - Text extraction failed]\n"
-                        )
-
-                return "\n".join(content)
-
-        except Exception as e:
-            logger.error(f"Error processing PDF file: {str(e)}")
-            raise
+        logger.info(
+            f"[Unstructured] Extracted {len(clean)} characters from {file_path}"
+        )
+        return clean
 
     def get_metadata(self, file_path: str) -> Dict[str, Any]:
-        """
-        Get metadata for a PDF file including PDF-specific properties.
-
-        Args:
-            file_path: Path to the PDF file
-
-        Returns:
-            Dictionary containing document metadata
-        """
         metadata = super().get_metadata(file_path)
         metadata["content_type"] = "application/pdf"
-        metadata["processor"] = "PdfProcessor"
-
-        # Extract PDF-specific metadata
-        try:
-            with open(file_path, "rb") as file:
-                reader = PyPDF2.PdfReader(file)
-
-                # Basic PDF properties
-                metadata["page_count"] = len(reader.pages)
-
-                # PDF document info if available
-                if reader.metadata:
-                    pdf_info = reader.metadata
-                    if pdf_info.title:
-                        metadata["title"] = pdf_info.title
-                    if pdf_info.author:
-                        metadata["author"] = pdf_info.author
-                    if pdf_info.subject:
-                        metadata["subject"] = pdf_info.subject
-                    if pdf_info.creator:
-                        metadata["creator"] = pdf_info.creator
-                    if pdf_info.producer:
-                        metadata["producer"] = pdf_info.producer
-        except Exception as e:
-            logger.warning(f"Error extracting PDF metadata: {str(e)}")
-
+        metadata["processor"] = "PdfProcessor(unstructured)"
         return metadata
 
 
