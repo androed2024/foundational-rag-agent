@@ -1,8 +1,13 @@
+""""""
+
 """
 Document ingestion pipeline for processing documents and generating embeddings.
+run:  streamlit run ui/app.py   
 """
 
 import os
+
+os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
 import uuid
 import logging
 from typing import List, Dict, Any, Optional
@@ -22,10 +27,6 @@ logger = logging.getLogger(__name__)
 
 
 class DocumentIngestionPipeline:
-    """
-    Simplified document ingestion pipeline with robust error handling.
-    """
-
     def __init__(self, supabase_client: Optional[SupabaseClient] = None):
         self.chunker = TextChunker(chunk_size=1000, chunk_overlap=200)
         self.embedding_generator = EmbeddingGenerator()
@@ -41,7 +42,7 @@ class DocumentIngestionPipeline:
         file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
         if file_size_mb > self.max_file_size_mb:
             logger.error(
-                f"File size ({file_size_mb:.2f} MB) exceeds maximum allowed size ({self.max_file_size_mb} MB)"
+                f"File size ({file_size_mb:.2f} MB) exceeds maximum allowed size"
             )
             return False
 
@@ -63,60 +64,27 @@ class DocumentIngestionPipeline:
             return []
 
         try:
-            text = processor.extract_text(file_path)
-            logger.info(
-                f"Extracted {len(text)} characters from {os.path.basename(file_path)}"
-            )
-
-            if not text or not text.strip():
-                logger.warning(
-                    f"No text content extracted from {os.path.basename(file_path)}"
-                )
-                return []
-
-        except Exception as e:
-            logger.error(
-                f"Failed to extract text from {os.path.basename(file_path)}: {str(e)}"
-            )
-            return []
-
-        try:
-            chunks = self.chunker.chunk_text(text)
-            chunks = [
-                chunk
-                for chunk in chunks
-                if chunk
-                and (
-                    (isinstance(chunk, str) and chunk.strip())
-                    or (isinstance(chunk, dict) and chunk.get("text", "").strip())
-                )
-            ]
-
+            chunks = processor.extract_text(file_path)
             if not chunks:
-                logger.warning("No valid chunks generated from document")
+                logger.warning(
+                    f"No chunks extracted from {os.path.basename(file_path)}"
+                )
                 return []
-
-            logger.info(f"Generated {len(chunks)} valid chunks from document")
-
+            logger.info(
+                f"Extracted {len(chunks)} chunks from {os.path.basename(file_path)}"
+            )
         except Exception as e:
-            logger.error(f"Error chunking document: {str(e)}")
+            logger.error(f"Failed to extract text: {str(e)}")
             return []
 
         try:
-            chunk_texts = [
-                chunk["text"] if isinstance(chunk, dict) else chunk for chunk in chunks
-            ]
+            chunk_texts = [chunk["text"] for chunk in chunks]
             embeddings = self.embedding_generator.embed_batch(chunk_texts, batch_size=5)
 
             if len(embeddings) != len(chunks):
-                logger.warning(
-                    f"Mismatch between chunks ({len(chunks)}) and embeddings ({len(embeddings)})"
-                )
+                logger.warning("Mismatch between chunks and embeddings")
                 chunks = chunks[: len(embeddings)]
                 chunk_texts = chunk_texts[: len(embeddings)]
-
-            logger.info(f"Generated {len(embeddings)} embeddings")
-
         except Exception as e:
             logger.error(f"Error generating embeddings: {str(e)}")
             return []
@@ -124,16 +92,12 @@ class DocumentIngestionPipeline:
         try:
             document_id = str(uuid.uuid4())
             timestamp = datetime.now().isoformat()
-
-            if metadata is None:
-                metadata = {}
-
-            metadata = metadata or {}
-            metadata = metadata.copy()  # wichtig: nie original überschreiben
-
+            metadata = metadata.copy() if metadata else {}
             metadata.update(
                 {
                     "filename": os.path.basename(file_path),
+                    "original_filename": metadata.get("original_filename"),  # ✅ NEW
+                    "signed_url": metadata.get("signed_url"),  # ✅ NEW
                     "file_path": file_path,
                     "file_size_bytes": os.path.getsize(file_path),
                     "processed_at": timestamp,
@@ -141,177 +105,30 @@ class DocumentIngestionPipeline:
                 }
             )
 
-            records = []
             stored_records = []
-
-            for i, (chunk, chunk_text, embedding) in enumerate(
-                zip(chunks, chunk_texts, embeddings)
-            ):
+            for i, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
                 chunk_metadata = metadata.copy()
-                if isinstance(chunk, dict):
-                    page_number = chunk.get("page")
-                    if page_number is not None:
-                        chunk_metadata["page"] = page_number
-
-                record = {
-                    "id": f"{document_id}_{i}",
-                    "document_id": document_id,
-                    "chunk_index": i,
-                    "text": chunk_text,
-                    "embedding": embedding,
-                    "metadata": chunk_metadata,
-                }
+                page = chunk.get("page")
+                if page is None:
+                    chunk_metadata["page"] = 1  # fallback for .txt-Dateien
+                else:
+                    chunk_metadata["page"] = page
 
                 try:
                     stored_record = self.supabase_client.store_document_chunk(
                         url=metadata.get("original_filename"),
                         chunk_number=i,
-                        content=chunk_text,
+                        content=chunk["text"],
                         embedding=embedding,
                         metadata=chunk_metadata,
                     )
                     stored_records.append(stored_record)
                 except Exception as e:
-                    logger.error(f"Error storing chunk {i} in database: {str(e)}")
+                    logger.error(f"Error storing chunk {i}: {str(e)}")
 
-                records.append(record)
-
-            logger.info(
-                f"Created {len(records)} document records with ID {document_id}"
-            )
             logger.info(f"Stored {len(stored_records)} chunks in database")
-            return records
+            return stored_records
 
         except Exception as e:
             logger.error(f"Error creating document records: {str(e)}")
             return []
-
-    def process_text(
-        self, text: str, source_id: str, metadata: Optional[Dict[str, Any]] = None
-    ) -> List[Dict[str, Any]]:
-        """
-        Process a text string through the ingestion pipeline.
-
-        Args:
-            text: Text content to process
-            source_id: Identifier for the source of the text
-            metadata: Optional metadata about the text
-
-        Returns:
-            List of dictionaries containing the processed chunks with their IDs
-        """
-        if not text or not text.strip():
-            logger.warning("Empty text provided to process_text")
-            return []
-
-        if metadata is None:
-            metadata = {}
-
-        # Add source information to metadata
-        metadata.update(
-            {
-                "source_type": "text",
-                "source_id": source_id,
-                "processed_at": datetime.now().isoformat(),
-            }
-        )
-
-        try:
-            # Generate chunks
-            chunks = self.chunker.chunk_text(text)
-            logger.debug(f"Extracted text:\n{text[:1000]}")
-
-            chunks = [
-                chunk
-                for chunk in chunks
-                if chunk
-                and (
-                    (isinstance(chunk, str) and chunk.strip())
-                    or (isinstance(chunk, dict) and chunk.get("text", "").strip())
-                )
-            ]
-
-            if not chunks:
-                logger.warning("No valid chunks generated from text")
-                return []
-
-            logger.info(f"Generated {len(chunks)} chunks from text")
-
-            # Generate embeddings
-            embeddings = self.embedding_generator.embed_batch(chunks)
-
-            # Create document records
-            document_id = str(uuid.uuid4())
-
-            # Create records and store in database
-            records = []
-            stored_records = []
-
-            # Create a URL/identifier for the text
-            url = f"text://{source_id}"
-
-            for i, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
-                # Create record for return value
-                record = {
-                    "id": f"{document_id}_{i}",
-                    "document_id": document_id,
-                    "chunk_index": i,
-                    "text": chunk,
-                    "embedding": embedding,
-                    "metadata": metadata.copy(),
-                }
-                records.append(record)
-
-                # Store in Supabase
-                try:
-                    stored_record = self.supabase_client.store_document_chunk(
-                        url=url,
-                        chunk_number=i,
-                        content=chunk,
-                        embedding=embedding,
-                        metadata=metadata.copy(),
-                    )
-                    stored_records.append(stored_record)
-                except Exception as e:
-                    logger.error(f"Error storing text chunk {i} in database: {str(e)}")
-
-            logger.info(f"Created {len(records)} records from text input")
-            logger.info(f"Stored {len(stored_records)} text chunks in database")
-            return records
-
-        except Exception as e:
-            logger.error(f"Error processing text: {str(e)}")
-            return []
-
-    def process_batch(
-        self, file_paths: List[str], metadata: Optional[Dict[str, Any]] = None
-    ) -> Dict[str, List[Dict[str, Any]]]:
-        """
-        Process a batch of files through the ingestion pipeline.
-
-        Args:
-            file_paths: List of paths to document files
-            metadata: Optional shared metadata for all files
-
-        Returns:
-            Dictionary mapping file paths to their processed chunks
-        """
-        results = {}
-
-        for file_path in file_paths:
-            try:
-                # Create file-specific metadata
-                file_metadata = metadata.copy() if metadata else {}
-                file_metadata["batch_processed"] = True
-
-                # Process the file
-                file_results = self.process_file(file_path, file_metadata)
-                results[file_path] = file_results
-
-                logger.info(f"Processed {file_path} with {len(file_results)} chunks")
-
-            except Exception as e:
-                logger.error(f"Error processing {file_path}: {str(e)}")
-                results[file_path] = []
-
-        return results
