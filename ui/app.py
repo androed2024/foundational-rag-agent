@@ -8,6 +8,11 @@ Streamlit application for the RAG AI agent.
 import sys
 import os
 
+# Logging
+import logging
+
+logging.basicConfig(level=logging.DEBUG)
+
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from agent.agent import format_source_reference
@@ -18,6 +23,30 @@ import streamlit as st
 from pathlib import Path
 import tempfile
 from datetime import datetime
+
+from datetime import datetime
+
+import unicodedata
+import re
+
+
+import unicodedata
+import re
+
+
+def sanitize_filename(filename: str) -> str:
+    filename = filename.strip()
+    filename = filename.replace("ä", "ae").replace("ö", "oe").replace("ü", "ue")
+    filename = filename.replace("Ä", "Ae").replace("Ö", "Oe").replace("Ü", "Ue")
+    filename = filename.replace("ß", "ss")
+    filename = (
+        unicodedata.normalize("NFKD", filename)
+        .encode("ascii", "ignore")
+        .decode("ascii")
+    )
+    filename = re.sub(r"[^a-zA-Z0-9_.-]", "_", filename)
+    return filename
+
 
 from dotenv import load_dotenv
 
@@ -94,26 +123,12 @@ def display_message_part(part):
             st.markdown(part.content)
 
 
-async def process_document(file_path: str, original_filename: str) -> Dict[str, Any]:
-    """
-    Process a document file and store it in the knowledge base.
-
-    Args:
-        file_path: Path to the document file
-
-    Returns:
-        Dictionary containing information about the processed document
-    """
-    # Create document ingestion pipeline with default settings
-    # The pipeline now handles chunking and embedding internally
+async def process_document(
+    file_path: str, original_filename: str, metadata: Dict[str, Any]
+) -> Dict[str, Any]:
     pipeline = DocumentIngestionPipeline()
 
     try:
-        metadata = {
-            "source": "ui_upload",
-            "upload_time": str(datetime.now()),
-            "original_filename": original_filename,
-        }
 
         loop = asyncio.get_event_loop()
         chunks = await loop.run_in_executor(
@@ -175,18 +190,21 @@ async def run_agent_with_streaming(user_input: str):
 
 async def update_available_sources():
     """
-    Update the list of available sources in the knowledge base and refresh document count.
+    Aktualisiert die Liste verfügbarer Quellen und die Anzahl der Dokumente.
     """
     try:
-        response = supabase.table("rag_pages").select("metadata").execute()
+        # Alle Metadaten abrufen
+        response = supabase.table("rag_pages").select("id, metadata").execute()
 
         file_set = set()
+
         for row in response.data:
             metadata = row.get("metadata", {})
             filename = metadata.get("original_filename")
             if filename:
                 file_set.add(filename)
 
+        # Update Session State
         st.session_state.sources = sorted(file_set)
         st.session_state.document_count = len(file_set)
 
@@ -217,7 +235,13 @@ async def main():
     # Liste nochmal laden (optional)
     await update_available_sources()
 
-    st.sidebar.write("Debug-Quellen:", st.session_state.sources)
+    # st.sidebar.write("Debug-Quellen:", st.session_state.sources)
+    try:
+        await update_available_sources()
+    except Exception as e:
+        print(f"Failed to update available sources: {e}")
+        st.session_state.sources = []
+        st.session_state.document_count = 0
 
     st.title("🔍 Wunsch Öl Wissens-Agent")
     st.markdown(
@@ -255,14 +279,29 @@ async def main():
                     supabase.storage.from_("privatedocs").remove([delete_filename])
                     storage_deleted = True
                 except Exception as e:
-                    st.error(f"Löschen von Dateien fehlgeschlagen: {e}")
+                    st.error(f"Löschen aus dem Speicher fehlgeschlagen: {e}")
 
-                # 2. Alle zugehörigen Chunks aus der Datenbank löschen
+                # 2. Alle zugehörigen Chunks aus der Datenbank löschen (über ID)
                 try:
                     st.write("DEBUG DELETE: Trying to delete", delete_filename)
-                    supabase.table("rag_pages").delete().filter(
-                        "metadata->>original_filename", "eq", delete_filename
-                    ).execute()
+
+                    # Alle Einträge holen
+                    response = (
+                        supabase.table("rag_pages").select("id, metadata").execute()
+                    )
+
+                    # IDs herausfiltern, die zum Dateinamen gehören
+                    ids_to_delete = [
+                        row["id"]
+                        for row in response.data
+                        if row.get("metadata", {}).get("original_filename")
+                        == delete_filename
+                    ]
+
+                    # Jetzt alle einzeln löschen (alternativ: .in_() statt Schleife, wenn du willst)
+                    for id_ in ids_to_delete:
+                        supabase.table("rag_pages").delete().eq("id", id_).execute()
+
                     db_deleted = True
 
                 except Exception as e:
@@ -271,19 +310,20 @@ async def main():
                 # 3. Erfolgs-/Fehlermeldung anzeigen
                 if storage_deleted and db_deleted:
                     st.success(
-                        f"Erfolgreich gelöscht {delete_filename} aus Speicher und Datenbank."
+                        f"Erfolgreich gelöscht: {delete_filename} aus Speicher und Datenbank."
                     )
                 elif storage_deleted:
                     st.warning(
-                        f"Gelöscht aus dem Speicher, aber nicht aus der Datenbank: {delete_filename}"
+                        f"Aus Speicher gelöscht, aber Datenbank-Einträge konnten nicht entfernt werden."
                     )
                 elif db_deleted:
                     st.warning(
-                        f"Aus der Datenbank gelöscht, aber nicht aus dem Speicher: {delete_filename}"
+                        f"Aus Datenbank gelöscht, aber Datei im Speicher konnte nicht entfernt werden."
                     )
 
                 # 4. Dokumentliste aktualisieren
                 await update_available_sources()
+
         else:
             st.info("Keine Dateien zur Löschung verfügbar.")
 
@@ -301,10 +341,8 @@ async def main():
                 total_files = len(new_files)
 
                 for i, (uploaded_file, file_id) in enumerate(new_files):
-                    progress_bar.progress(i / total_files)
-                    status_text.text(
-                        f"Verarbeite {uploaded_file.name}... ({i+1}/{total_files})"
-                    )
+                    safe_filename = sanitize_filename(uploaded_file.name)
+                    print("Sanitized filename:", safe_filename)
 
                     with tempfile.NamedTemporaryFile(
                         delete=False, suffix=Path(uploaded_file.name).suffix
@@ -314,28 +352,35 @@ async def main():
 
                     bucket_name = "privatedocs"
                     with open(temp_file_path, "rb") as f:
-                        supabase.storage.from_(bucket_name).upload(
-                            uploaded_file.name,
-                            f,
-                            {"cacheControl": "3600", "x-upsert": "true"},
-                        )
+                        try:
+                            supabase.storage.from_(bucket_name).upload(
+                                safe_filename,
+                                f,
+                                {"cacheControl": "3600", "x-upsert": "true"},
+                            )
+                        except Exception as upload_error:
+                            st.error(f"Fehler beim Upload in Supabase: {upload_error}")
+                            print(f"[ERROR] Supabase Upload Failed: {upload_error}")
+                            continue  # Skip to next file
 
                         signed_url_resp = supabase.storage.from_(
                             bucket_name
-                        ).create_signed_url(uploaded_file.name, expires_in=3600)
+                        ).create_signed_url(safe_filename, expires_in=3600)
+
                         public_url = signed_url_resp["signedURL"]
 
                         metadata = {
                             "source": "ui_upload",
                             "upload_time": str(datetime.now()),
-                            "original_filename": uploaded_file.name,
+                            "original_filename": safe_filename,
                             "signed_url": public_url,
                         }
 
                     try:
                         result = await process_document(
-                            temp_file_path, uploaded_file.name
+                            temp_file_path, safe_filename, metadata
                         )
+
                         if result["success"]:
                             st.success(
                                 f"Verarbeitete {uploaded_file.name}: {result['chunk_count']} Textabschnitte"

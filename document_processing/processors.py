@@ -132,27 +132,41 @@ class PdfProcessor(DocumentProcessor):
     Processor for PDF files using unstructured for better text extraction.
     """
 
-    def extract_text(self, file_path: str) -> str:
+    def extract_text(self, file_path: str) -> List[Dict[str, Any]]:
         from unstructured.partition.pdf import partition_pdf
         import unicodedata
 
         elements = partition_pdf(
             filename=file_path,
-            ocr_languages="deu+eng",  # OCR wird nur genutzt, wenn nötig
+            languages=["deu", "eng"],
             extract_images_in_pdf=False,
         )
 
-        raw = "\n".join(e.text for e in elements if e.text)
-        clean = (
-            unicodedata.normalize("NFKC", raw)
-            .replace("\u2011", "-")
-            .replace("\u00a0", " ")
-        )
+        if not elements:
+            logger.warning(f"[Unstructured] No elements extracted: {file_path}")
+            return []
+
+        chunks = []
+
+        for el in elements:
+            if not el.text:
+                continue
+
+            # ✅ Use attribute access for modern unstructured versions
+            page = getattr(el.metadata, "page_number", 1)
+
+            text = (
+                unicodedata.normalize("NFKC", el.text)
+                .replace("\u2011", "-")
+                .replace("\u00a0", " ")
+            )
+
+            chunks.append({"text": text, "page": page})
 
         logger.info(
-            f"[Unstructured] Extracted {len(clean)} characters from {file_path}"
+            f"[Unstructured] Extracted {len(chunks)} chunks with pages from {file_path}"
         )
-        return clean
+        return chunks
 
     def get_metadata(self, file_path: str) -> Dict[str, Any]:
         metadata = super().get_metadata(file_path)

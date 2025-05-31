@@ -1,6 +1,4 @@
-"""
-Text chunking functionality for document processing.
-"""
+# run: streamlit run app.py
 
 import os
 from typing import List
