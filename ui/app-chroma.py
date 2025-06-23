@@ -16,6 +16,11 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from agent.agent import format_source_reference
 
+from collections import defaultdict
+from document_processing.chroma_client import ChromaClient
+
+chroma_client = ChromaClient()
+
 import asyncio
 from typing import List, Dict, Any
 import streamlit as st
@@ -149,20 +154,23 @@ async def run_agent_with_streaming(user_input: str):
 
 async def update_available_sources():
     try:
-        response = supabase.table("rag_pages").select("id, metadata").execute()
+        # Alle Chunks mit Metadaten aus Chroma laden
+        all_chunks = chroma_client.get_all_documents()  # Oder get_all_metadata()
         file_set = set()
-        for row in response.data:
-            metadata = row.get("metadata", {})
-            filename = metadata.get("original_filename")
+
+        for doc in all_chunks:
+            meta = doc.get("metadata", {})
+            filename = meta.get("original_filename")
             if filename:
                 file_set.add(filename)
+
         st.session_state.sources = sorted(file_set)
         st.session_state.document_count = len(file_set)
+
     except Exception as e:
-        print(f"Fehler beim Aktualisieren der Dokumentenliste: {e}")
-        for key in ["sources", "document_count", "processed_files", "messages"]:
-            if key in st.session_state:
-                del st.session_state[key]
+        print(f"[Fehler] update_available_sources(): {e}")
+        st.session_state.sources = []
+        st.session_state.document_count = 0
 
 
 async def main():
@@ -184,35 +192,29 @@ async def main():
         st.metric("Dokumente in der Wissensdatenbank", st.session_state.document_count)
 
         st.header("🗑️ Datei löschen")
+
         if st.session_state.sources:
             delete_filename = st.selectbox(
                 "Ausgewählte Datei löschen", st.session_state.sources
             )
+
             if st.button("Datei zum Löschen auswählen"):
-                storage_deleted = db_deleted = False
                 try:
-                    supabase.storage.from_("privatedocs").remove([delete_filename])
-                    storage_deleted = True
-                except Exception as e:
-                    st.error(f"Löschen aus dem Speicher fehlgeschlagen: {e}")
-                try:
-                    response = (
-                        supabase.table("rag_pages").select("id, metadata").execute()
+                    deleted_count = chroma_client.delete_documents_by_filename(
+                        delete_filename
                     )
-                    ids_to_delete = [
-                        row["id"]
-                        for row in response.data
-                        if row.get("metadata", {}).get("original_filename")
-                        == delete_filename
-                    ]
-                    for id_ in ids_to_delete:
-                        supabase.table("rag_pages").delete().eq("id", id_).execute()
-                    db_deleted = True
+
+                    if deleted_count > 0:
+                        st.success(
+                            f"Gelöscht: {delete_filename} ({deleted_count} Chunks)"
+                        )
+                    else:
+                        st.warning("Keine passenden Dokumente gefunden.")
+
+                    await update_available_sources()
+
                 except Exception as e:
-                    st.error(f"Datenbank-Löschung fehlgeschlagen: {e}")
-                if storage_deleted and db_deleted:
-                    st.success(f"Erfolgreich gelöscht: {delete_filename}")
-                await update_available_sources()
+                    st.error(f"Fehler beim Löschen: {str(e)}")
         else:
             st.info("Keine Dateien zur Löschung verfügbar.")
 

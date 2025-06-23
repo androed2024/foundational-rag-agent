@@ -4,10 +4,12 @@ Main agent definition for the RAG AI agent.
 
 import os
 import sys
+import logging
 from typing import List, Dict, Any, Optional, TypedDict
 
 from pydantic_ai import Agent
 from pydantic_ai.tools import Tool
+from supabase import create_client, SupabaseException
 
 from dotenv import load_dotenv
 from pathlib import Path
@@ -25,38 +27,38 @@ from agent.prompts import RAG_SYSTEM_PROMPT
 # Load environment variables from the project root .env file
 project_root = Path(__file__).resolve().parent.parent
 dotenv_path = project_root / ".env"
-
-# Force override of existing environment variables
 load_dotenv(dotenv_path, override=True)
+
+# Supabase-Konfiguration (Service-Role-Key!)
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")  # angepasst an .env
+
+# Lazy-init placeholder
+global_supabase = None
+
+
+def get_supabase_client():
+    global global_supabase
+    if global_supabase is None:
+        if not SUPABASE_URL or not SUPABASE_KEY:
+            raise SupabaseException(
+                "SUPABASE_URL und SUPABASE_KEY m\u00fcssen gesetzt sein"
+            )
+        global_supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+    return global_supabase
 
 
 class AgentDeps(TypedDict, total=False):
-    """
-    Dependencies for the RAG agent.
-    """
-
     kb_search: KnowledgeBaseSearch
 
 
 class RAGAgent:
-    """
-    RAG AI agent with knowledge base search capabilities.
-
-    Args:
-        model: OpenAI model to use. Defaults to OPENAI_MODEL env var.
-        api_key: OpenAI API key. Defaults to OPENAI_API_KEY env var.
-        kb_search: KnowledgeBaseSearch instance for searching the knowledge base.
-    """
-
     def __init__(
         self,
         model: Optional[str] = None,
         api_key: Optional[str] = None,
         kb_search: Optional[KnowledgeBaseSearch] = None,
     ):
-        """
-        Initialize the RAG agent.
-        """
         self.model = model or os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
         self.api_key = api_key or os.getenv("OPENAI_API_KEY")
 
@@ -65,13 +67,9 @@ class RAGAgent:
                 "OpenAI API key must be provided either as an argument or environment variable."
             )
 
-        # Initialize the knowledge base search tool
         self.kb_search = kb_search or KnowledgeBaseSearch(owner_agent=self)
-
-        # Create the search tool
         self.search_tool = Tool(self.kb_search.search)
 
-        # Initialize the Pydantic AI agent
         self.agent = Agent(
             f"openai:{self.model}",
             system_prompt=RAG_SYSTEM_PROMPT,
@@ -81,59 +79,52 @@ class RAGAgent:
     async def query(
         self, question: str, max_results: int = 5, source_filter: Optional[str] = None
     ) -> Dict[str, Any]:
-        """
-        Query the RAG agent with a question.
-
-        Args:
-            question: The question to ask
-            max_results: Maximum number of knowledge base results to retrieve
-            source_filter: Optional filter to search only within a specific source
-
-        Returns:
-            Dictionary containing the agent's response and the knowledge base search results
-        """
-        # Create dependencies for the agent
         deps = AgentDeps(kb_search=self.kb_search)
-
-        # Run the agent with the question
         result = await self.agent.run(question, deps=deps)
-
-        # Get the agent's response
         response = result.output
-
-        # Get the knowledge base search results from the tool calls
         kb_results = []
         for tool_call in getattr(result, "tool_calls", []):
             if tool_call.tool.name == "search":
                 kb_results = tool_call.result or []
-
         return {"response": response, "kb_results": kb_results}
 
     async def get_available_sources(self) -> List[str]:
-        """
-        Get a list of all available sources in the knowledge base.
-
-        Returns:
-            List of source identifiers
-        """
         return await self.kb_search.get_available_sources()
 
 
+# Funktion aus Klasse herausgel\u00f6st
+
+
 def format_source_reference(metadata: Dict[str, Any], short: bool = False) -> str:
+    """
+    Erzeugt on-demand eine signierte URL f\u00fcr private Supabase-Dokumente.
+    Ignoriert vorhandene (veraltete) signed_url-Eintr\u00e4ge aus dem Upload.
+    """
     filename = metadata.get("original_filename", "Unbekanntes Dokument")
-    page = metadata.get("page")
-    signed_url = metadata.get("signed_url")
+    page = metadata.get("page") or "?"
+    bucket = metadata.get("source_filter", "privatedocs")
+
+    logging.debug(f"Erzeuge Signed URL f\u00fcr Datei: {filename} im Bucket: {bucket}")
 
     if short:
-        return f"{filename}"
+        return filename
 
-    if signed_url:
-        if page:
-            signed_url += f"#page={page}"
-        return f"**Quelle:** {filename}, Seite {page}\n🔗 [PDF öffnen]({signed_url})"
-    else:
-        return f"**Quelle:** {filename}" + (f", Seite {page}" if page else "")
+    client = get_supabase_client()
+    try:
+        res = client.storage.from_(bucket).create_signed_url(filename, 3600)
+        signed = res.get("signedURL")
+        if not signed:
+            logging.error(f"Keine signed URL in Response: {res}")
+            return f"**Quelle:** {filename}, Seite {page} (kein Link verf\u00fcgbar)"
+    except Exception as e:
+        logging.error(f"Fehler beim Erstellen der signierten URL: {e}")
+        return f"**Quelle:** {filename}, Seite {page} (Fehler beim Link-Aufbau)"
+
+    if page:
+        signed += f"#page={page}"
+    page_info = f"Seite {page}" if page else "ohne Seitenangabe"
+    return f"**Quelle:** {filename}, {page_info}\n\n[PDF \u00f6ffnen]({signed})"
 
 
-# Create a singleton instance for easy import
+# Singleton-Instanz f\u00fcr einfachen Import
 agent = RAGAgent()
