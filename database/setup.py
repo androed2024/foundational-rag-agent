@@ -3,11 +3,10 @@ Database setup and connection utilities for Supabase with pgvector.
 """
 
 import os
-import json
 from typing import Dict, List, Optional, Any
 from dotenv import load_dotenv
 from pathlib import Path
-from supabase import create_client, Client
+from supabase import create_client
 
 # Load environment variables from the project root .env file
 project_root = Path(__file__).resolve().parent.parent
@@ -125,6 +124,25 @@ class SupabaseClient:
 
         except Exception as e:
             print("❌ Fehler bei Supabase-RPC:", str(e))
+            return []
+
+    def keyword_search_documents(
+        self,
+        query: str,
+        match_count: int = 20,
+        filter_metadata: Optional[Dict[str, Any]] = None,
+    ) -> List[Dict[str, Any]]:
+        """Simple keyword search as fallback for hybrid retrieval."""
+        try:
+            qb = self.client.table("rag_pages").select("id,url,chunk_number,content,metadata")
+            if filter_metadata:
+                for key, value in filter_metadata.items():
+                    qb = qb.contains("metadata", {key: value})
+            qb = qb.ilike("content", f"%{query}%").limit(match_count)
+            result = qb.execute()
+            return result.data or []
+        except Exception as e:
+            print("❌ Fehler bei Keyword-Suche:", e)
             return []
 
     def get_document_by_id(self, doc_id: int) -> Dict[str, Any]:

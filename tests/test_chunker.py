@@ -3,8 +3,6 @@ Unit tests for the text chunker module.
 """
 import os
 import sys
-import pytest
-from pathlib import Path
 
 # Add parent directory to path to allow relative imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -22,8 +20,8 @@ class TestTextChunker:
         Test that TextChunker initializes with default values.
         """
         chunker = TextChunker()
-        assert chunker.chunk_size == 1000
-        assert chunker.chunk_overlap == 200
+        assert chunker.chunk_size == 2000
+        assert chunker.chunk_overlap == 400
     
     def test_init_with_custom_values(self):
         """
@@ -49,7 +47,7 @@ class TestTextChunker:
         """
         Test chunking text that is shorter than chunk_size.
         """
-        chunker = TextChunker(chunk_size=1000, chunk_overlap=200)
+        chunker = TextChunker(chunk_size=2000, chunk_overlap=400)
         text = "This is a short text."
         chunks = chunker.chunk_text(text)
         

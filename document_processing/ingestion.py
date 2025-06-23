@@ -11,7 +11,6 @@ os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
 import uuid
 import logging
 from typing import List, Dict, Any, Optional
-from pathlib import Path
 from datetime import datetime
 
 from document_processing.chunker import TextChunker
@@ -28,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 class DocumentIngestionPipeline:
     def __init__(self, supabase_client: Optional[SupabaseClient] = None):
-        self.chunker = TextChunker(chunk_size=1000, chunk_overlap=200)
+        self.chunker = TextChunker(chunk_size=2000, chunk_overlap=400)
         self.embedding_generator = EmbeddingGenerator()
         self.max_file_size_mb = 10
         self.supabase_client = supabase_client or SupabaseClient()
@@ -78,7 +77,8 @@ class DocumentIngestionPipeline:
             return []
 
         try:
-            chunk_texts = [chunk["text"] for chunk in chunks]
+            from document_processing.utils import preprocess_text
+            chunk_texts = [preprocess_text(chunk["text"]) for chunk in chunks]
             embeddings = self.embedding_generator.embed_batch(chunk_texts, batch_size=5)
 
             if len(embeddings) != len(chunks):
@@ -118,7 +118,7 @@ class DocumentIngestionPipeline:
                     stored_record = self.supabase_client.store_document_chunk(
                         url=metadata.get("original_filename"),
                         chunk_number=i,
-                        content=chunk["text"],
+                        content=chunk_texts[i],
                         embedding=embedding,
                         metadata=chunk_metadata,
                     )
