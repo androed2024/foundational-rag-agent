@@ -4,6 +4,7 @@ Database setup and connection utilities for Supabase with pgvector.
 
 import os
 from typing import Dict, List, Optional, Any
+from postgrest import ReturnMethod
 from dotenv import load_dotenv
 from pathlib import Path
 from supabase import create_client
@@ -134,7 +135,9 @@ class SupabaseClient:
     ) -> List[Dict[str, Any]]:
         """Simple keyword search as fallback for hybrid retrieval."""
         try:
-            qb = self.client.table("rag_pages").select("id,url,chunk_number,content,metadata")
+            qb = self.client.table("rag_pages").select(
+                "id,url,chunk_number,content,metadata"
+            )
             if filter_metadata:
                 for key, value in filter_metadata.items():
                     qb = qb.contains("metadata", {key: value})
@@ -177,6 +180,27 @@ class SupabaseClient:
             Number of unique documents (based on unique URLs)
         """
         return len(self.get_all_document_sources())
+
+    def delete_documents_by_filename(self, filename: str) -> int:
+        """Delete all document chunks belonging to a given filename.
+
+        Args:
+            filename: Name stored in ``metadata['original_filename']``.
+
+        Returns:
+            Number of deleted rows.
+        """
+        try:
+            resp = (
+                self.client.table("rag_pages")
+                .delete(returning=ReturnMethod.representation)
+                .contains("metadata", {"original_filename": filename})
+                .execute()
+            )
+            return len(resp.data or [])
+        except Exception as e:
+            print(f"Fehler beim Löschen von {filename}: {e}")
+            return 0
 
 
 def setup_database_tables() -> None:

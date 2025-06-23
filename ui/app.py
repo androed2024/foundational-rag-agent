@@ -196,19 +196,18 @@ async def main():
                 except Exception as e:
                     st.error(f"Löschen aus dem Speicher fehlgeschlagen: {e}")
                 try:
-                    delete_resp = (
-                        supabase.table("rag_pages")
-                        .delete()
-                        .contains("metadata", {"original_filename": delete_filename})
-                        .execute()
+                    db_deleted = (
+                        supabase_client.delete_documents_by_filename(delete_filename)
+                        > 0
                     )
-                    db_deleted = bool(delete_resp.data)
                 except Exception as e:
                     st.error(f"Datenbank-Löschung fehlgeschlagen: {e}")
                 if storage_deleted and db_deleted:
                     st.success(f"Erfolgreich gelöscht: {delete_filename}")
                 elif storage_deleted:
-                    st.warning(f"Keine passenden Datenbankeinträge für {delete_filename} gefunden")
+                    st.warning(
+                        f"Keine passenden Datenbankeinträge für {delete_filename} gefunden"
+                    )
                 await update_available_sources()
         else:
             st.info("Keine Dateien zur Löschung verfügbar.")
