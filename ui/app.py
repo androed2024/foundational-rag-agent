@@ -10,7 +10,8 @@ import os
 # Logging
 import logging
 
-logging.basicConfig(level=logging.DEBUG)
+# Reduce verbosity by logging only informational messages and above
+logging.basicConfig(level=logging.INFO)
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
