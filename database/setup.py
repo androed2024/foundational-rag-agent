@@ -191,13 +191,27 @@ class SupabaseClient:
             Number of deleted rows.
         """
         try:
+            # First try direct match on the ``url`` column.  Older entries use
+            # the original filename there, which is what the UI displays.
             resp = (
                 self.client.table("rag_pages")
                 .delete(returning=ReturnMethod.representation)
-                .contains("metadata", {"original_filename": filename})
+                .eq("url", filename)
                 .execute()
             )
-            return len(resp.data or [])
+            deleted = len(resp.data or [])
+
+            # Fall back to matching the JSON metadata field for robustness
+            if deleted == 0:
+                resp = (
+                    self.client.table("rag_pages")
+                    .delete(returning=ReturnMethod.representation)
+                    .contains("metadata", {"original_filename": filename})
+                    .execute()
+                )
+                deleted = len(resp.data or [])
+
+            return deleted
         except Exception as e:
             print(f"Fehler beim Löschen von {filename}: {e}")
             return 0
