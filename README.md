@@ -60,6 +60,21 @@ foundational-rag-agent/
    streamlit run ui/app.py
    ```
 6. Run the SQL in `rag-example.sql` to create the table and matching function for RAG
+7. create execute_sql function
+   in supabase SQL editor:
+      -- Eine einfache RPC-Funktion, um beliebige SQL-Statements (z.B. DELETE) auszuführen
+      -- ACHTUNG: Verwende sie nur mit serverseitigen Keys (nicht öffentlich zugänglich machen!)
+      create or replace function execute_sql(query text)
+      returns void
+      language plpgsql
+      as $$
+      begin
+      execute query;
+      end;
+      $$;
+8. Delete all entries in supabase db:
+      DELETE FROM rag_pages;
+
 
 ## Usage
 

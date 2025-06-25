@@ -12,6 +12,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from database.setup import SupabaseClient
 from document_processing.embeddings import EmbeddingGenerator
+from document_processing.reranker import CrossEncoderReranker
 
 
 class KnowledgeBaseSearchParams(BaseModel):
@@ -24,7 +25,7 @@ class KnowledgeBaseSearchParams(BaseModel):
         description="The search query to find relevant information in the knowledge base",
     )
     max_results: int = Field(
-        5, description="Maximum number of results to return (default: 5)"
+        15, description="Maximum number of results to return (default: 15)"
     )
     source_filter: Optional[str] = Field(
         None, description="Optional filter to search only within a specific source"
@@ -71,6 +72,7 @@ class KnowledgeBaseSearch:
         self.supabase_client = supabase_client or SupabaseClient()
         self.embedding_generator = embedding_generator or EmbeddingGenerator()
         self.owner_agent = owner_agent
+        self.reranker = CrossEncoderReranker()
 
     async def search(
         self, params: KnowledgeBaseSearchParams
@@ -92,23 +94,30 @@ class KnowledgeBaseSearch:
         if params.source_filter:
             filter_metadata = {"source": params.source_filter}
 
-        # Search for documents
-        results = self.supabase_client.search_documents(
+        candidate_count = max(params.max_results, 50)
+        vector_results = self.supabase_client.search_documents(
             query_embedding=query_embedding,
-            match_count=params.max_results,
+            match_count=candidate_count,
             filter_metadata=filter_metadata,
         )
+        keyword_results = self.supabase_client.keyword_search_documents(
+            params.query,
+            match_count=candidate_count,
+            filter_metadata=filter_metadata,
+        )
+        results = vector_results + [r for r in keyword_results if r not in vector_results]
+        results = self.reranker.rerank(params.query, results)[: params.max_results]
 
         # Convert results to KnowledgeBaseSearchResult objects
         search_results = []
         for result in results:
             search_results.append(
                 KnowledgeBaseSearchResult(
-                    content=result["content"],
-                    source=result["metadata"].get("source", "Unknown"),
-                    source_type=result["metadata"].get("source_type", "Unknown"),
-                    similarity=result["similarity"],
-                    metadata=result["metadata"],
+                    content=result.get("content", ""),
+                    source=result.get("metadata", {}).get("source", "Unknown"),
+                    source_type=result.get("metadata", {}).get("source_type", "Unknown"),
+                    similarity=float(result.get("similarity", 0.0)),
+                    metadata=result.get("metadata", {}),
                 )
             )
 
@@ -120,8 +129,9 @@ class KnowledgeBaseSearch:
 
         # for debugging
         for res in results:
+            score = float(res.get("similarity", res.get("rerank_score", 0.0)))
             print(
-                f"[DEBUG] Score: {res['similarity']:.4f} – Datei: {res['metadata'].get('original_filename')}"
+                f"[DEBUG] Score: {score:.4f} – Datei: {res.get('metadata', {}).get('original_filename')}"
             )
 
         return search_results

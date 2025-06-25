@@ -11,7 +11,6 @@ os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
 import uuid
 import logging
 from typing import List, Dict, Any, Optional
-from pathlib import Path
 from datetime import datetime
 
 from document_processing.chunker import TextChunker
@@ -28,18 +27,20 @@ logger = logging.getLogger(__name__)
 
 class DocumentIngestionPipeline:
     def __init__(self, supabase_client: Optional[SupabaseClient] = None):
-        self.chunker = TextChunker(chunk_size=1000, chunk_overlap=200)
+        self.chunker = TextChunker(chunk_size=2000, chunk_overlap=400)
         self.embedding_generator = EmbeddingGenerator()
         self.max_file_size_mb = 10
         self.supabase_client = supabase_client or SupabaseClient()
         logger.info("Initialized DocumentIngestionPipeline with default components")
 
     def _check_file(self, file_path: str) -> bool:
+        print("🔎 Checking file:", file_path)
         if not os.path.exists(file_path):
-            logger.error(f"File not found: {file_path}")
+            print("❌ File not found!")
             return False
 
         file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
+        print(f"📏 File size: {file_size_mb:.2f} MB")
         if file_size_mb > self.max_file_size_mb:
             logger.error(
                 f"File size ({file_size_mb:.2f} MB) exceeds maximum allowed size"
@@ -49,11 +50,14 @@ class DocumentIngestionPipeline:
         return True
 
     def process_file(
-        self, file_path: str, metadata: Optional[Dict[str, Any]] = None
+        self,
+        file_path: str,
+        metadata: Optional[Dict[str, Any]] = None,
+        on_progress: Optional[callable] = None,
     ) -> List[Dict[str, Any]]:
         if not self._check_file(file_path):
             return []
-
+        print("JETZT DOC PROCESSING......", file_path)
         try:
             processor = get_document_processor(file_path)
             if not processor:
@@ -70,6 +74,7 @@ class DocumentIngestionPipeline:
                     f"No chunks extracted from {os.path.basename(file_path)}"
                 )
                 return []
+
             logger.info(
                 f"Extracted {len(chunks)} chunks from {os.path.basename(file_path)}"
             )
@@ -78,7 +83,9 @@ class DocumentIngestionPipeline:
             return []
 
         try:
-            chunk_texts = [chunk["text"] for chunk in chunks]
+            from document_processing.utils import preprocess_text
+
+            chunk_texts = [preprocess_text(chunk["text"]) for chunk in chunks]
             embeddings = self.embedding_generator.embed_batch(chunk_texts, batch_size=5)
 
             if len(embeddings) != len(chunks):
@@ -118,7 +125,7 @@ class DocumentIngestionPipeline:
                     stored_record = self.supabase_client.store_document_chunk(
                         url=metadata.get("original_filename"),
                         chunk_number=i,
-                        content=chunk["text"],
+                        content=chunk_texts[i],
                         embedding=embedding,
                         metadata=chunk_metadata,
                     )

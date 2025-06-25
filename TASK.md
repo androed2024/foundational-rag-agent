@@ -40,3 +40,4 @@
 - [ ] Implement metadata filtering in the UI
 - [ ] Add visualization of vector embeddings
 - [ ] Create a CLI interface for batch document processing
+- [ ] Fix file deletion bug in UI (2025-06-23)

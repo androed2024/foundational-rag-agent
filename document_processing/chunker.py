@@ -1,8 +1,6 @@
 # run: streamlit run app.py
 
-import os
 from typing import List
-from pathlib import Path
 
 
 class TextChunker:
@@ -10,7 +8,7 @@ class TextChunker:
     Simple text chunker that splits documents into manageable pieces.
     """
 
-    def __init__(self, chunk_size: int = 1000, chunk_overlap: int = 200):
+    def __init__(self, chunk_size: int = 2000, chunk_overlap: int = 400):
         """
         Initialize the chunker with size and overlap settings.
 

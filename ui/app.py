@@ -7,10 +7,14 @@ Aufruf: streamlit run ui/app.py
 import sys
 import os
 
+# Projektbasisverzeichnis zum Pfad hinzufügen (eine Ebene über 'ui')
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
 # Logging
 import logging
 
-logging.basicConfig(level=logging.DEBUG)
+# Reduce verbosity by logging only informational messages and above
+logging.basicConfig(level=logging.INFO)
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -46,15 +50,10 @@ def sanitize_filename(filename: str) -> str:
 from dotenv import load_dotenv
 
 load_dotenv()
-from supabase import create_client, Client
-
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+from utils.supabase_client import client
+from utils.delete_helper import delete_file_and_records
 
 from document_processing.ingestion import DocumentIngestionPipeline
-from document_processing.chunker import TextChunker
-from document_processing.embeddings import EmbeddingGenerator
 from database.setup import SupabaseClient
 from agent.agent import RAGAgent, agent as rag_agent, format_source_reference
 from pydantic_ai.messages import (
@@ -80,13 +79,6 @@ if "messages" not in st.session_state:
 if "sources" not in st.session_state:
     st.session_state.sources = []
 
-if "document_count" not in st.session_state:
-    try:
-        st.session_state.document_count = supabase_client.count_documents()
-    except Exception as e:
-        print(f"Fehler beim Abrufen der Dokumentenzahl: {e}")
-        st.session_state.document_count = 0
-
 if "processed_files" not in st.session_state:
     st.session_state.processed_files = set()
 
@@ -104,10 +96,15 @@ async def process_document(
     file_path: str, original_filename: str, metadata: Dict[str, Any]
 ) -> Dict[str, Any]:
     pipeline = DocumentIngestionPipeline()
+
+    loop = asyncio.get_event_loop()
+
     try:
-        loop = asyncio.get_event_loop()
         chunks = await loop.run_in_executor(
-            None, lambda: pipeline.process_file(file_path, metadata)
+            None,
+            lambda: pipeline.process_file(
+                file_path, metadata  # , on_progress=streamlit_progress
+            ),
         )
         if not chunks:
             return {
@@ -149,11 +146,14 @@ async def run_agent_with_streaming(user_input: str):
 
 async def update_available_sources():
     try:
-        response = supabase.table("rag_pages").select("id, metadata").execute()
+        response = client.table("rag_pages").select("id, metadata, url").execute()
         file_set = set()
         for row in response.data:
+            print("DEBUG ROW:", row)
             metadata = row.get("metadata", {})
+            print("DEBUG METADATA:", metadata)
             filename = metadata.get("original_filename")
+            print("DEBUG FILENAME:", filename)
             if filename:
                 file_set.add(filename)
         st.session_state.sources = sorted(file_set)
@@ -168,6 +168,27 @@ async def update_available_sources():
 async def main():
     await update_available_sources()
 
+    # Initialisierung des Flags
+    if "just_uploaded" not in st.session_state:
+        st.session_state.just_uploaded = False
+
+    # Robuste Initialisierung aller benötigten session_state Variablen
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
+
+    if "sources" not in st.session_state:
+        st.session_state.sources = []
+
+    if "document_count" not in st.session_state:
+        try:
+            st.session_state.document_count = supabase_client.count_documents()
+        except Exception as e:
+            print(f"Fehler beim Abrufen der Dokumentenzahl: {e}")
+            st.session_state.document_count = 0
+
+    if "processed_files" not in st.session_state:
+        st.session_state.processed_files = set()
+
     st.title("🔍 Wissens-Agent")
     st.markdown(
         """Diese Anwendung ermöglicht es, PDF- oder TXT-Datenblätter hochzuladen und anschließend Fragen dazu zu stellen. 
@@ -175,57 +196,26 @@ async def main():
     )
 
     with st.sidebar:
-        st.header("📄 Dokumente hochladen (txt oder pdf)")
+        st.header("📄 Dokumente hochladen")
         uploaded_files = st.file_uploader(
             "Hochladen von Dokumenten in die Wissensdatenbank",
             type=["txt", "pdf"],
             accept_multiple_files=True,
         )
-        st.metric("Dokumente in der Wissensdatenbank", st.session_state.document_count)
 
-        st.header("🗑️ Datei löschen")
-        if st.session_state.sources:
-            delete_filename = st.selectbox(
-                "Ausgewählte Datei löschen", st.session_state.sources
-            )
-            if st.button("Datei zum Löschen auswählen"):
-                storage_deleted = db_deleted = False
-                try:
-                    supabase.storage.from_("privatedocs").remove([delete_filename])
-                    storage_deleted = True
-                except Exception as e:
-                    st.error(f"Löschen aus dem Speicher fehlgeschlagen: {e}")
-                try:
-                    response = (
-                        supabase.table("rag_pages").select("id, metadata").execute()
-                    )
-                    ids_to_delete = [
-                        row["id"]
-                        for row in response.data
-                        if row.get("metadata", {}).get("original_filename")
-                        == delete_filename
-                    ]
-                    for id_ in ids_to_delete:
-                        supabase.table("rag_pages").delete().eq("id", id_).execute()
-                    db_deleted = True
-                except Exception as e:
-                    st.error(f"Datenbank-Löschung fehlgeschlagen: {e}")
-                if storage_deleted and db_deleted:
-                    st.success(f"Erfolgreich gelöscht: {delete_filename}")
-                await update_available_sources()
-        else:
-            st.info("Keine Dateien zur Löschung verfügbar.")
-
-        if uploaded_files:
+        if uploaded_files and not st.session_state.just_uploaded:
             new_files = [
                 (f, f"{f.name}_{hash(f.getvalue().hex())}")
                 for f in uploaded_files
                 if f"{f.name}_{hash(f.getvalue().hex())}"
                 not in st.session_state.processed_files
             ]
+
             if new_files:
+                st.subheader("⏳ Upload-Fortschritt")
                 progress_bar = st.progress(0)
                 status_text = st.empty()
+
                 for i, (uploaded_file, file_id) in enumerate(new_files):
                     safe_filename = sanitize_filename(uploaded_file.name)
                     with tempfile.NamedTemporaryFile(
@@ -233,9 +223,15 @@ async def main():
                     ) as temp_file:
                         temp_file.write(uploaded_file.getvalue())
                         temp_file_path = temp_file.name
+
                     try:
+                        progress_bar.progress(0.05)
+                        status_text.markdown(
+                            f"🟡 **{safe_filename}**: 📥 *Upload startet...*"
+                        )
+
                         with open(temp_file_path, "rb") as f:
-                            supabase.storage.from_("privatedocs").upload(
+                            client.storage.from_("privatedocs").upload(
                                 safe_filename,
                                 f,
                                 {
@@ -244,35 +240,103 @@ async def main():
                                     "content-type": "application/pdf",
                                 },
                             )
-                        signed_url_resp = supabase.storage.from_(
-                            "privatedocs"
-                        ).create_signed_url(safe_filename, expires_in=3600)
+
+                        progress_bar.progress(0.3)
+                        status_text.markdown(
+                            f"🟠 **{safe_filename}**: 📤 *Dateiübertragung abgeschlossen*"
+                        )
+
                         metadata = {
                             "source": "ui_upload",
                             "upload_time": str(datetime.now()),
                             "original_filename": safe_filename,
                         }
+
+                        status_text.markdown(
+                            f"🔵 **{safe_filename}**: 🧠 *Verarbeitung läuft...*"
+                        )
+
                         result = await process_document(
                             temp_file_path, safe_filename, metadata
                         )
+
+                        progress_bar.progress(0.8)
+
                         if result["success"]:
                             st.success(
-                                f"Verarbeitete {uploaded_file.name}: {result['chunk_count']} Textabschnitte"
+                                f"✅ {uploaded_file.name} verarbeitet: {result['chunk_count']} Textabschnitte"
                             )
                             st.session_state.document_count += 1
                             st.session_state.processed_files.add(file_id)
                         else:
                             st.error(
-                                f"Fehler beim Verarbeiten {uploaded_file.name}: {result['error']}"
+                                f"❌ Fehler beim Verarbeiten {uploaded_file.name}: {result['error']}"
                             )
+
+                        progress_bar.progress(1.0)
+                        status_text.markdown(
+                            f"🟢 **{safe_filename}**: ✅ *Verarbeitung abgeschlossen*"
+                        )
+
                     finally:
                         os.unlink(temp_file_path)
-                    progress_bar.progress((i + 1) / len(new_files))
-                status_text.text("Alle Dateien bearbeitet")
+
+                st.session_state.just_uploaded = True
                 await update_available_sources()
                 st.rerun()
+
             else:
                 st.info("Alle Dateien wurden bereits verarbeitet")
+
+        st.metric("Dokumente in der Wissensdatenbank", st.session_state.document_count)
+
+        st.header("🗑️ Datei löschen")
+        if st.session_state.sources:
+            delete_filename = st.selectbox(
+                "Ausgewählte Datei löschen", st.session_state.sources
+            )
+            if st.button("Ausgewählte Datei Löschen"):
+                st.write("Dateiname zur Löschung:", delete_filename)
+                result_log = delete_file_and_records(delete_filename)
+                st.code(result_log)
+                await update_available_sources()
+                storage_deleted = db_deleted = False
+                try:
+                    st.write("Dateiname zur Löschung:", delete_filename)
+                    print("Lösche:", delete_filename)
+                    client.storage.from_("privatedocs").remove([delete_filename])
+                    storage_deleted = True
+                except Exception as e:
+                    st.error(f"Löschen aus dem Speicher fehlgeschlagen: {e}")
+                try:
+                    deleted_count = supabase_client.delete_documents_by_filename(
+                        delete_filename
+                    )
+                    st.code(
+                        f"🧨 SQL-Delete für '{delete_filename}' – {deleted_count} Einträge entfernt."
+                    )
+                    db_deleted = True
+                except Exception as e:
+                    st.error(f"Datenbank-Löschung fehlgeschlagen: {e}")
+                    db_deleted = False
+                if storage_deleted and db_deleted:
+                    st.success("✅ Vollständig gelöscht.")
+                elif storage_deleted and not db_deleted:
+                    st.warning(
+                        "⚠️ Datei im Storage gelöscht, aber kein Eintrag in der Datenbank gefunden."
+                    )
+                elif not storage_deleted and db_deleted:
+                    st.warning(
+                        "⚠️ Datenbankeinträge gelöscht, aber Datei im Storage konnte nicht entfernt werden."
+                    )
+                else:
+                    st.error(
+                        "❌ Weder Datei noch Datenbankeinträge konnten gelöscht werden."
+                    )
+                await update_available_sources()
+                st.rerun()
+        else:
+            st.info("Keine Dateien zur Löschung verfügbar.")
 
     st.header("💬 Spreche mit der KI")
     for msg in st.session_state.messages:

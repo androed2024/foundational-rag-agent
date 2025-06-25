@@ -1,4 +1,10 @@
 import pytest
+import sys
+import os
+
+# Projekt-Wurzelverzeichnis zum Python-Path hinzufügen
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
 from utils.delete_helper import delete_file_and_records
 
 
