@@ -41,9 +41,7 @@ def get_supabase_client():
     global global_supabase
     if global_supabase is None:
         if not SUPABASE_URL or not SUPABASE_KEY:
-            raise SupabaseException(
-                "SUPABASE_URL und SUPABASE_KEY m\u00fcssen gesetzt sein"
-            )
+            raise SupabaseException("SUPABASE_URL und SUPABASE_KEY müssen gesetzt sein")
         global_supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
     return global_supabase
 
@@ -79,32 +77,41 @@ class RAGAgent:
     async def query(
         self, question: str, max_results: int = 5, source_filter: Optional[str] = None
     ) -> Dict[str, Any]:
+        print("\n=== [Agent.query] ===")
+        print("Frage:", question)
+
         deps = AgentDeps(kb_search=self.kb_search)
         result = await self.agent.run(question, deps=deps)
         response = result.output
+
         kb_results = []
         for tool_call in getattr(result, "tool_calls", []):
             if tool_call.tool.name == "search":
                 kb_results = tool_call.result or []
+
+        print(f"🔍 Treffer aus Tool 'search': {len(kb_results)}")
+        for i, res in enumerate(kb_results):
+            sim = res.get("similarity", 0.0)
+            snippet = res.get("content", "").replace("\n", " ")[:100]
+            print(f"[{i+1}] Score: {sim:.3f} | {snippet}...")
+
         return {"response": response, "kb_results": kb_results}
 
     async def get_available_sources(self) -> List[str]:
         return await self.kb_search.get_available_sources()
 
 
-# Funktion aus Klasse herausgel\u00f6st
-
-
+# Funktion aus Klasse herausgelöst
 def format_source_reference(metadata: Dict[str, Any], short: bool = False) -> str:
     """
-    Erzeugt on-demand eine signierte URL f\u00fcr private Supabase-Dokumente.
-    Ignoriert vorhandene (veraltete) signed_url-Eintr\u00e4ge aus dem Upload.
+    Erzeugt on-demand eine signierte URL für private Supabase-Dokumente oder Notizen.
+    Ignoriert vorhandene (veraltete) signed_url-Einträge aus dem Upload.
     """
     filename = metadata.get("original_filename", "Unbekanntes Dokument")
     page = metadata.get("page") or "?"
     bucket = metadata.get("source_filter", "privatedocs")
 
-    logging.debug(f"Erzeuge Signed URL f\u00fcr Datei: {filename} im Bucket: {bucket}")
+    logging.debug(f"Erzeuge Signed URL für Datei: {filename} im Bucket: {bucket}")
 
     if short:
         return filename
@@ -115,16 +122,19 @@ def format_source_reference(metadata: Dict[str, Any], short: bool = False) -> st
         signed = res.get("signedURL")
         if not signed:
             logging.error(f"Keine signed URL in Response: {res}")
-            return f"**Quelle:** {filename}, Seite {page} (kein Link verf\u00fcgbar)"
+            return f"**Quelle:** {filename}, Seite {page} (kein Link verfügbar)"
     except Exception as e:
         logging.error(f"Fehler beim Erstellen der signierten URL: {e}")
         return f"**Quelle:** {filename}, Seite {page} (Fehler beim Link-Aufbau)"
 
+    if bucket == "notes":
+        return f"**Quelle:** Notiz: {filename}\n\n[Notiz anzeigen]({signed})"
+
     if page:
         signed += f"#page={page}"
     page_info = f"Seite {page}" if page else "ohne Seitenangabe"
-    return f"**Quelle:** {filename}, {page_info}\n\n[PDF \u00f6ffnen]({signed})"
+    return f"**Quelle:** {filename}, {page_info}\n\n[PDF öffnen]({signed})"
 
 
-# Singleton-Instanz f\u00fcr einfachen Import
+# Singleton-Instanz für einfachen Import
 agent = RAGAgent()

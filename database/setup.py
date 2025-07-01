@@ -39,6 +39,46 @@ class SupabaseClient:
 
         self.client = create_client(self.supabase_url, self.supabase_key)
 
+    def insert_embedding(
+        self, text: str, metadata: dict, embedding: list, url: Optional[str] = None
+    ):
+        row = {
+            "content": text,
+            "metadata": metadata,
+            "embedding": embedding,
+        }
+        if url:
+            row["url"] = url
+
+    def insert_embedding(
+        self,
+        text: str,
+        metadata: dict,
+        embedding: list,
+        url: Optional[str] = None,
+        chunk_number: int = 0,
+    ):
+        """
+        Speichert einen einzelnen Chunk mit Text, Metadaten und Vektor in die Tabelle 'rag_pages'.
+        Optional kann eine URL (z. B. Titel + Timestamp) mitgegeben werden.
+        """
+        row = {
+            "content": text,
+            "metadata": metadata,
+            "embedding": embedding,
+            "chunk_number": chunk_number,  # 🧩 Hier setzen!
+        }
+
+        if url:
+            row["url"] = url
+
+        try:
+            response = self.client.table("rag_pages").insert(row).execute()
+            return response
+        except Exception as e:
+            print(f"❌ Fehler beim Einfügen des Embeddings: {e}")
+            raise e
+
     def store_document_chunk(
         self,
         url: str,

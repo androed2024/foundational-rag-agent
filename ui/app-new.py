@@ -31,6 +31,8 @@ import tempfile
 from datetime import datetime
 
 import streamlit as st
+import streamlit.components.v1 as components
+import base64
 
 import unicodedata
 import re
@@ -95,6 +97,66 @@ if "processed_files" not in st.session_state:
     st.session_state.processed_files = set()
 
 
+def custom_file_uploader(label="Datei auswählen", file_types="pdf,txt"):
+    custom_uploader = f"""
+    <style>
+      .upload-btn-wrapper {{
+        position: relative;
+        overflow: hidden;
+        display: inline-block;
+        margin-bottom: 18px;
+      }}
+      .btn {{
+        border: 1px solid #ccc;
+        color: #333;
+        background-color: #f6f7fa;
+        padding: 12px 24px;
+        border-radius: 8px;
+        font-size: 1.1rem;
+        font-family: inherit;
+        font-weight: 500;
+        cursor: pointer;
+      }}
+      .upload-btn-wrapper input[type=file] {{
+        font-size: 100px;
+        position: absolute;
+        left: 0;
+        top: 0;
+        opacity: 0;
+      }}
+    </style>
+    <div class="upload-btn-wrapper">
+      <button class="btn">{label}</button>
+      <input type="file" id="file-upload" accept="{file_types}" />
+      <span id="file-selected"></span>
+    </div>
+    <script>
+      const input = window.parent.document.getElementById("file-upload");
+      if (input) {{
+        input.onchange = function(event) {{
+          const file = event.target.files[0];
+          if (file) {{
+            var reader = new FileReader();
+            reader.onload = function(e) {{
+              var dataUrl = e.target.result;
+              window.parent.postMessage({{
+                isStreamlitMessage: true,
+                type: "streamlit:setComponentValue",
+                value: dataUrl
+              }}, "*");
+              var el = window.parent.document.getElementById("file-selected");
+              if (el) el.innerText = file.name + " ausgewählt";
+            }};
+            reader.readAsDataURL(file);
+          }}
+        }};
+      }}
+    </script>
+    """
+    result = components.html(custom_uploader, height=100)
+    return result
+
+
 def display_message_part(part):
     if part.part_kind == "user-prompt" and part.content:
         with st.chat_message("user"):
@@ -108,12 +170,15 @@ async def process_document(
     file_path: str, original_filename: str, metadata: Dict[str, Any]
 ) -> Dict[str, Any]:
     pipeline = DocumentIngestionPipeline()
+
     loop = asyncio.get_event_loop()
 
     try:
         chunks = await loop.run_in_executor(
             None,
-            lambda: pipeline.process_file(file_path, metadata),
+            lambda: pipeline.process_file(
+                file_path, metadata  # , on_progress=streamlit_progress
+            ),
         )
         if not chunks:
             return {
@@ -121,15 +186,6 @@ async def process_document(
                 "file_path": file_path,
                 "error": "Keine gültigen Textabschnitte gefunden",
             }
-
-        print("\n📦 Embedding-Check")
-        for i, c in enumerate(chunks):
-            emb = c.get("embedding")
-            text = c.get("content", "")
-            print(
-                f"Chunk {i+1}: Embedding: {len(emb) if emb else 0} Werte | Text: {text[:100].replace(chr(10), ' ')}..."
-            )
-
         return {"success": True, "file_path": file_path, "chunk_count": len(chunks)}
     except Exception as e:
         import traceback
@@ -272,39 +328,34 @@ async def main():
                 # Chatbot Interface
                 if hasattr(rag_agent, "last_match") and rag_agent.last_match:
                     source_pages = defaultdict(set)
-                    print("--- Treffer im Retrieval ---")
+
                     for match in rag_agent.last_match:
                         sim = match.get("similarity", 0)
-                        if sim < 0.2:
+                        if sim < 0.7:
                             continue
                         meta = match.get("metadata", {})
                         fn = meta.get("original_filename")
                         pg = meta.get("page", 1)
                         if fn:
                             source_pages[fn].add(pg)
-                            print("✅ Dokument:", fn, "| Seite:", pg, "| Score:", sim)
 
-                if source_pages:
-                    # >>>> Debug-Ausgabe vor Regex <<<<
-                    print("\n--- RAW FULL_RESPONSE VOR CLEANUP ---\n")
-                    print(full_response)
-                    print("\n--- ENDE RAW FULL_RESPONSE ---\n")
+                    if source_pages:
+                        # 🧼 Veraltete PDF-Links entfernen
+                        full_response = re.sub(
+                            r"\[PDF öffnen\]\([^)]+\)", "", full_response
+                        )
 
-                    for fn, pages in sorted(source_pages.items()):
-                        if not pages:
-                            continue
-                        sorted_pages = sorted(pages)
-                        page_list = ", ".join(str(pg) for pg in sorted_pages)
-
-                        meta = {
-                            "original_filename": fn,
-                            "page": sorted_pages[0],  # Link zu einer Beispielseite
-                            "source_filter": "privatedocs",
-                        }
-                        pdf_link = format_source_reference(meta)
-
-                        # Nutze für den Link etwas wie:
-                        full_response += f"\n**Quelle:** {fn}, Seiten {page_list} [PDF öffnen]({pdf_link})"
+                        # 🧩 Neue Quellen-Liste einfügen
+                        full_response += "\n\n### 📄 Verwendete Dokumente:\n"
+                        for fn, pages in source_pages.items():
+                            for pg in sorted(pages):
+                                meta = {
+                                    "original_filename": fn,
+                                    "page": pg,
+                                    "source_filter": "privatedocs",
+                                }
+                                print("Format Link für:", meta)
+                                full_response += f"\n- {format_source_reference(meta)}"
 
                 # ✅ Endgültige Antwort anzeigen
                 message_placeholder.markdown(full_response)
@@ -400,148 +451,36 @@ async def main():
                 st.session_state.manual_source = "Beratung"
                 st.rerun()
 
+    import base64
+
     with tab3:
         st.markdown(
             """
-        <div style="padding:1rem;background:#f6f7fa;border-radius:8px;font-size:16px;">
-            📎 Dateien für Wissensdatenbank hochladen<br>
-            <small>(max. 200 MB pro Datei • PDF oder TXT)</small>
-        </div>
-        """,
+            <div style="padding:1rem;background:#f6f7fa;border-radius:8px;font-size:16px;">
+                📎 Ziehe deine Dateien hier rein oder nutze den Button
+                <strong>„Dateien hochladen“</strong><br>
+                <small>(max. 200 MB pro Datei • PDF oder TXT)</small>
+            </div>
+            """,
             unsafe_allow_html=True,
         )
-
-        # KEIN Button und KEIN upload_clicked mehr!
-        uploaded_files = st.file_uploader(
-            label="",
-            type=["txt", "pdf"],
-            accept_multiple_files=True,
-            key="uploader_hidden",
-            label_visibility="collapsed",
+        uploaded_data = custom_file_uploader(
+            "📂 Dateien hochladen", "application/pdf,.txt"
         )
 
-        st.markdown(
-            "<style>section[data-testid='stFileUploader'] label {display:none;}</style>",
-            unsafe_allow_html=True,
-        )
-
-        if uploaded_files and not st.session_state.just_uploaded:
-            new_files = [
-                (f, f"{f.name}_{hash(f.getvalue().hex())}")
-                for f in uploaded_files
-                if f"{f.name}_{hash(f.getvalue().hex())}"
-                not in st.session_state.processed_files
-            ]
-
-            if new_files:
-                st.subheader("⏳ Upload-Fortschritt")
-                progress_bar = st.progress(0)
-                status_text = st.empty()
-
-                for i, (uploaded_file, file_id) in enumerate(new_files):
-                    safe_filename = sanitize_filename(uploaded_file.name)
-
-                    file_bytes = uploaded_file.getvalue()
-                    file_hash = compute_file_hash(file_bytes)
-
-                    # 🔍 Duplikatprüfung anhand Hash
-                    existing_hash = (
-                        client.table("rag_pages")
-                        .select("id")
-                        .eq("metadata->>file_hash", file_hash)
-                        .execute()
-                    )
-
-                    if existing_hash.data:
-                        st.warning(
-                            f"⚠️ Die Datei **{safe_filename}** wurde bereits (unter anderem Namen) hochgeladen und wird nicht erneut gespeichert."
-                        )
-                        continue
-
-                    # ✅ Duplikatprüfung vor Upload
-                    existing = (
-                        client.table("rag_pages")
-                        .select("id")
-                        .eq("url", safe_filename)
-                        .execute()
-                    )
-
-                    if existing.data:
-                        st.warning(
-                            f"⚠️ Die Datei **{safe_filename}** ist bereits in der Wissensdatenbank vorhanden und wurde nicht erneut hochgeladen."
-                        )
-                        continue
-
-                    with tempfile.NamedTemporaryFile(
-                        delete=False, suffix=Path(uploaded_file.name).suffix
-                    ) as temp_file:
-                        temp_file.write(uploaded_file.getvalue())
-                        temp_file_path = temp_file.name
-
-                    try:
-                        progress_bar.progress(0.05)
-                        status_text.markdown(
-                            f"🟡 **{safe_filename}**: 📥 *Upload startet...*"
-                        )
-
-                        with open(temp_file_path, "rb") as f:
-                            client.storage.from_("privatedocs").upload(
-                                safe_filename,
-                                f,
-                                {
-                                    "cacheControl": "3600",
-                                    "x-upsert": "true",
-                                    "content-type": "application/pdf",
-                                },
-                            )
-
-                        progress_bar.progress(0.3)
-                        status_text.markdown(
-                            f"🟠 **{safe_filename}**: 📤 *Dateiübertragung abgeschlossen*"
-                        )
-
-                        metadata = {
-                            "source": "ui_upload",
-                            "upload_time": str(datetime.now()),
-                            "original_filename": safe_filename,
-                            "file_hash": file_hash,
-                        }
-
-                        status_text.markdown(
-                            f"🔵 **{safe_filename}**: 🧠 *Verarbeitung läuft...*"
-                        )
-
-                        result = await process_document(
-                            temp_file_path, safe_filename, metadata
-                        )
-
-                        progress_bar.progress(0.8)
-
-                        if result["success"]:
-                            st.success(
-                                f"✅ {uploaded_file.name} verarbeitet: {result['chunk_count']} Textabschnitte"
-                            )
-                            st.session_state.document_count += 1
-                            st.session_state.processed_files.add(file_id)
-                        else:
-                            st.error(
-                                f"❌ Fehler beim Verarbeiten {uploaded_file.name}: {result['error']}"
-                            )
-
-                        progress_bar.progress(1.0)
-                        status_text.markdown(
-                            f"🟢 **{safe_filename}**: ✅ *Verarbeitung abgeschlossen*"
-                        )
-
-                    finally:
-                        os.unlink(temp_file_path)
-
-                st.session_state.just_uploaded = True
-                await update_available_sources()
-                st.rerun()
-
-            else:
-                st.info("Alle Dateien wurden bereits verarbeitet")
+        # Achtung: uploaded_data ist ein DataURL (base64)
+        if (
+            uploaded_data is not None
+            and isinstance(uploaded_data, str)
+            and uploaded_data.startswith("data:")
+        ):
+            header, encoded = uploaded_data.split(",", 1)
+            file_bytes = base64.b64decode(encoded)
+            st.success("Datei erfolgreich empfangen! Größe: %d Bytes" % len(file_bytes))
+            # Hier deine eigene Upload-Weiterverarbeitung:
+            # - Dateityp prüfen
+            # - In temp_file schreiben
+            # - Supabase Upload, etc.
 
         st.markdown(
             "<hr style='margin-top: 6px; margin-bottom: 6px;'>", unsafe_allow_html=True
@@ -554,63 +493,12 @@ async def main():
             delete_filename = st.selectbox(
                 "Dokument/Notiz selektieren", st.session_state.sources
             )
-
-            # Vorschau anzeigen
-            st.markdown("### 📄 Vorschau")
-
-            # Metadaten aus Supabase holen
-            try:
-                res = (
-                    client.table("rag_pages")
-                    .select("content", "metadata")
-                    .eq("url", delete_filename)
-                    .limit(1)
-                    .execute()
-                )
-
-                if res.data:
-                    entry = res.data[0]
-                    content = entry.get("content", "")
-                    metadata = entry.get("metadata", {})
-                    source = metadata.get("source", "")
-
-                    if source == "manuell":
-                        st.markdown(f"**Titel:** {metadata.get('title', 'Unbekannt')}")
-                        st.markdown(f"**Quelle:** {metadata.get('quelle', '–')}")
-                        st.markdown("**Inhalt:**")
-                        st.code(content, language="markdown")
-                    else:
-                        # Original PDF anzeigen
-                        try:
-                            signed_url = metadata.get("signed_url")
-                            if signed_url:
-                                st.markdown("**📄 Original-PDF Vorschau:**")
-                                st.components.v1.html(
-                                    f"""
-                                    <iframe src=\"{signed_url}\" width=\"100%\" height=\"600px\" style=\"border:1px solid #ccc; border-radius: 6px;\"></iframe>
-                                    """,
-                                    height=620,
-                                )
-                            else:
-                                st.warning("Keine Original-PDF verfügbar.")
-                        except Exception as e:
-                            st.error(
-                                f"Fehler beim Laden der vollständigen Vorschau: {e}"
-                            )
-                else:
-                    st.info("Keine Vorschau verfügbar.")
-
-            except Exception as e:
-                st.error(f"Fehler beim Laden der Vorschau: {e}")
-
             if st.button("Ausgewählte Dokument/Notiz löschen"):
                 st.write("Dateiname zur Löschung:", delete_filename)
                 result_log = delete_file_and_records(delete_filename)
                 st.code(result_log)
                 await update_available_sources()
-
                 storage_deleted = db_deleted = False
-
                 try:
                     st.write("Dateiname zur Löschung:", delete_filename)
                     print("Lösche:", delete_filename)
@@ -618,19 +506,17 @@ async def main():
                     storage_deleted = True
                 except Exception as e:
                     st.error(f"Löschen aus dem Speicher fehlgeschlagen: {e}")
-
                 try:
                     deleted_count = supabase_client.delete_documents_by_filename(
                         delete_filename
                     )
                     st.code(
-                        f"🩨 SQL-Delete für '{delete_filename}' – {deleted_count} Einträge entfernt."
+                        f"🧨 SQL-Delete für '{delete_filename}' – {deleted_count} Einträge entfernt."
                     )
                     db_deleted = True
                 except Exception as e:
                     st.error(f"Datenbank-Löschung fehlgeschlagen: {e}")
                     db_deleted = False
-
                 if storage_deleted and db_deleted:
                     st.success("✅ Vollständig gelöscht.")
                 elif storage_deleted and not db_deleted:
@@ -645,10 +531,8 @@ async def main():
                     st.error(
                         "❌ Weder Dokument/Notiz noch Datenbankeinträge konnten gelöscht werden."
                     )
-
                 await update_available_sources()
                 st.rerun()
-
         else:
             st.info("Keine Dokumente/Notizen zur Löschung verfügbar.")
 

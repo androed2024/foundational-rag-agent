@@ -86,6 +86,9 @@ class KnowledgeBaseSearch:
         Returns:
             List of search results
         """
+        print("\n---[RAG Retrieval]---")
+        print("Frage:", params.query)
+
         # Generate embedding for the query
         query_embedding = self.embedding_generator.embed_text(params.query)
 
@@ -105,8 +108,36 @@ class KnowledgeBaseSearch:
             match_count=candidate_count,
             filter_metadata=filter_metadata,
         )
-        results = vector_results + [r for r in keyword_results if r not in vector_results]
-        results = self.reranker.rerank(params.query, results)[: params.max_results]
+        results = vector_results + [
+            r for r in keyword_results if r not in vector_results
+        ]
+        # v1: mit reranking
+        # results = self.reranker.rerank(params.query, results)[: params.max_results]
+
+        # reranking deaktivieren
+        results = results[: params.max_results]
+
+        print("\n📊 Reranker-Scores:")
+        for i, r in enumerate(results[: params.max_results]):
+            sim = r.get("similarity", -1)
+            rerank = r.get("rerank_score", -1)
+            snippet = r.get("content", "")[:120].replace("\n", " ")
+            print(f"[{i+1}] sim={sim:.3f} | rerank={rerank:.3f} → {snippet}...")
+
+        print(f"🔎 similarity_search → {len(results)} Treffer")
+        for i, match in enumerate(results):
+            sim = match.get("similarity", -1)
+            url = match.get("url", "N/A")
+            meta = match.get("metadata", {})
+            title = meta.get("title") or meta.get("original_filename", "Unbekannt")
+            content_snippet = match.get("content", "")[:200].replace("\n", " ")
+            print(f"[{i+1}] {title} (Score: {sim:.3f}) | URL: {url}")
+            print(f"     Textauszug: {content_snippet}...")
+
+        # Prompt Context Debug
+        context_snippets = [match.get("content", "")[:500] for match in results]
+        full_context = "\n---\n".join(context_snippets)
+        print("\n📋 Prompt Context (erster Teil):\n", full_context[:1000])
 
         # Convert results to KnowledgeBaseSearchResult objects
         search_results = []
@@ -115,7 +146,9 @@ class KnowledgeBaseSearch:
                 KnowledgeBaseSearchResult(
                     content=result.get("content", ""),
                     source=result.get("metadata", {}).get("source", "Unknown"),
-                    source_type=result.get("metadata", {}).get("source_type", "Unknown"),
+                    source_type=result.get("metadata", {}).get(
+                        "source_type", "Unknown"
+                    ),
                     similarity=float(result.get("similarity", 0.0)),
                     metadata=result.get("metadata", {}),
                 )
@@ -125,13 +158,6 @@ class KnowledgeBaseSearch:
         if self.owner_agent is not None:
             self.owner_agent.last_match = (
                 results  # <- das sind die rohen Supabase-Treffer, nicht die gewrappten
-            )
-
-        # for debugging
-        for res in results:
-            score = float(res.get("similarity", res.get("rerank_score", 0.0)))
-            print(
-                f"[DEBUG] Score: {score:.4f} – Datei: {res.get('metadata', {}).get('original_filename')}"
             )
 
         return search_results

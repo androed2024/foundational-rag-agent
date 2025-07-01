@@ -139,3 +139,34 @@ class DocumentIngestionPipeline:
         except Exception as e:
             logger.error(f"Error creating document records: {str(e)}")
             return []
+
+    def process_text(
+        self, content: str, metadata: dict, url: Optional[str] = None
+    ) -> List[dict]:
+        """
+        Verarbeitet manuellen Text und speichert ihn samt Embeddings in Supabase.
+        """
+        from document_processing.chunker import TextChunker
+        from document_processing.embeddings import EmbeddingGenerator
+        from database.setup import SupabaseClient
+
+        chunker = TextChunker()
+        embedding_generator = EmbeddingGenerator()
+        supabase = SupabaseClient()
+
+        chunks = chunker.chunk_text(content)
+        for chunk in chunks:
+            chunk["metadata"] = metadata
+
+        vectors = embedding_generator.embed_batch([c["text"] for c in chunks])
+
+        for i, (chunk, embedding) in enumerate(zip(chunks, vectors)):
+            supabase.insert_embedding(
+                text=chunk["text"],
+                metadata=chunk["metadata"],
+                embedding=embedding,
+                url=url,
+                chunk_number=i,  # ✅ Index mitgeben
+            )
+
+        return chunks

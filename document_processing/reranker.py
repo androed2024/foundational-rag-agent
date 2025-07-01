@@ -20,6 +20,13 @@ class CrossEncoderReranker:
             return results
         pairs = [(query, r["content"]) for r in results]
         scores = self.model.predict(pairs)
+
+        # for r, s in zip(results, scores):
+        #    r["rerank_score"] = float(s)
+
+        # gewichtete Kombination für rerank
         for r, s in zip(results, scores):
-            r["rerank_score"] = float(s)
+            sim = r.get("similarity", 0)
+            r["rerank_score"] = float(0.5 * sim + 0.5 * s)
+
         return sorted(results, key=lambda x: x.get("rerank_score", 0), reverse=True)

@@ -38,11 +38,11 @@ class TextChunker:
         # Handle empty or very short text
         if not text or not text.strip():
             print("Warning: Empty text provided to chunker")
-            return [""]
+            return [{"text": "", "page": 1}]
 
         if len(text) <= self.chunk_size:
             print(f"Text is only {len(text)} chars, returning as single chunk")
-            return [text]
+            return [{"text": text, "page": 1}]
 
         # Simple sliding window chunking
         chunks = []
@@ -88,7 +88,9 @@ class TextChunker:
                 )
 
         print(f"Created {len(chunks)} chunks from {text_length} characters of text")
-        return chunks
+
+        chunk_dicts = [{"text": c, "page": i + 1} for i, c in enumerate(chunks)]
+        return chunk_dicts
 
     def chunk_by_separator(self, text: str, separator: str = "\n\n") -> List[str]:
         """
@@ -103,11 +105,11 @@ class TextChunker:
         """
         # Handle empty text
         if not text or not text.strip():
-            return [""]
+            return [{"text": "", "page": 1}]
 
         # Handle short text
         if len(text) <= self.chunk_size:
-            return [text]
+            return [{"text": text, "page": 1}]
 
         # Split by separator
         parts = text.split(separator)
@@ -118,7 +120,7 @@ class TextChunker:
 
         # Handle case where there are no meaningful parts
         if not parts:
-            return [""]
+            return [{"text": "", "page": 1}]
 
         # Handle case where each part is already small enough
         if all(len(part) <= self.chunk_size for part in parts):
@@ -161,4 +163,5 @@ class TextChunker:
             chunks.append(current_chunk)
 
         print(f"Created {len(chunks)} chunks using separator-based chunking")
-        return chunks
+        chunk_dicts = [{"text": c, "page": i + 1} for i, c in enumerate(chunks)]
+        return chunk_dicts
