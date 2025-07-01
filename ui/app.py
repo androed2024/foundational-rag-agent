@@ -62,6 +62,9 @@ def sanitize_filename(filename: str) -> str:
 from dotenv import load_dotenv
 
 load_dotenv()
+
+print("DEBUG: OPENAI_API_KEY:", os.environ.get("OPENAI_API_KEY"))
+
 from utils.supabase_client import client
 from utils.delete_helper import delete_file_and_records
 
