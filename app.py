@@ -1,6 +1,7 @@
 """
 Streamlit application for the RAG AI agent.
-Aufruf: streamlit run ui/app.py
+Virt Umgebung aktivieren: source .venv/bin/activate
+Aufruf App: streamlit run app.py
 """
 
 # Add parent directory to path to allow relative imports
@@ -16,6 +17,8 @@ import logging
 # Date+Time for post knowledge in db
 from datetime import datetime
 import pytz
+
+from base64 import b64encode
 
 # Reduce verbosity by logging only informational messages and above
 logging.basicConfig(level=logging.INFO)
@@ -41,9 +44,14 @@ import hashlib
 def compute_file_hash(file_bytes: bytes) -> str:
     return hashlib.sha256(file_bytes).hexdigest()
 
-
 from collections import defaultdict
 
+# Logo-Pfad im Root-Verzeichnis
+logo_path = "logo-wunschoele.png"
+
+# Logo-Datei als base64 laden
+with open(logo_path, "rb") as image_file:
+    encoded = b64encode(image_file.read()).decode()
 
 def sanitize_filename(filename: str) -> str:
     filename = filename.strip()
@@ -63,7 +71,8 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-print("DEBUG: OPENAI_API_KEY:", os.environ.get("OPENAI_API_KEY"))
+app_version = os.getenv("APP_VERSION", "0.0")
+print("DEBUG VERSION:", os.getenv("APP_VERSION"))
 
 from utils.supabase_client import client
 from utils.delete_helper import delete_file_and_records
@@ -84,6 +93,30 @@ st.set_page_config(
     page_icon="🔍",
     layout="wide",
     initial_sidebar_state="collapsed",
+)
+
+# Responsive Kopfzeile mit Logo, Titel, Version und Zähler
+st.markdown(
+    f"""
+    <style>
+        @media (max-width: 768px) {{
+            .header-flex {{ flex-direction: column; align-items: flex-start; gap: 0.4rem; }}
+            .header-title-wrap {{ flex-direction: column; align-items: flex-start; }}
+        }}
+    </style>
+    <div class=\"header-flex\" style=\"display: flex; justify-content: space-between; align-items: center; padding-top: 0.5rem; padding-bottom: 0.5rem;\">
+        <div class=\"header-title-wrap\" style=\"display: flex; align-items: center;\">
+            <img src=\"data:image/png;base64,{encoded}\" alt=\"Logo\" style=\"height: 42px; margin-right: 14px;\">
+            <span style=\"font-size: 22px; font-weight: 600;\">Wunsch-Öle Wissens Agent</span>
+            <span style=\"color: #007BFF; font-size: 14px; margin-left: 12px;\">🔧 Version: {app_version}</span>
+        </div>
+        <div style=\"font-size: 14px;\">
+            📄 Dokumente: {st.session_state.get("document_count", 0)} &nbsp;&nbsp;&nbsp; 🧠 Notizen: {st.session_state.get("knowledge_count", 0)}
+        </div>
+    </div>
+    <hr style=\"margin-top: 0.4rem; margin-bottom: 0.8rem;\">
+    """,
+    unsafe_allow_html=True
 )
 
 supabase_client = SupabaseClient()
@@ -204,19 +237,12 @@ async def update_available_sources():
 
 
 async def main():
+    # Logo + Titel anzeigen
+    
     await update_available_sources()
 
     doc_count = st.session_state.get("document_count", 0)
     note_count = st.session_state.get("knowledge_count", 0)
-
-    st.markdown(
-        f"""
-        <div style='text-align: right; margin-top: -40px; margin-bottom: 10px; font-size: 14px;'>
-            📄 Dokumente: {doc_count} &nbsp;&nbsp;&nbsp; 🧠 Notizen: {note_count}
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
 
     # Initialisierung des Flags
     if "just_uploaded" not in st.session_state:
@@ -241,7 +267,7 @@ async def main():
 
     tab1, tab2, tab3, tab4 = st.tabs(
         [
-            "💬 Wunsch-Öl KI Assistent",
+            "💬 Wunsch-Öle KI Assistent",
             "➕ Wissen hinzufügen",
             "📄 Dokumente hochladen",
             "🗑️ Dokument / Notiz löschen",
@@ -250,7 +276,7 @@ async def main():
 
     with tab1:
         st.markdown(
-            "<h4>💬 Spreche mit dem Wunsch-Öl KI Assistenten</h4>",
+            "<h4>💬 Spreche mit dem Wunsch-Öle KI Assistenten</h4>",
             unsafe_allow_html=True,
         )
 
